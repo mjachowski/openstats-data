@@ -31,6 +31,10 @@ MAUI_ZIP_CODES = [
     96793,
 ]
 
+# We have RPAD sales data through 2024, but NHGIS + FRED household
+# income data only through 2023. So, put everything in 2023 dollars.
+INFLATION_BASE_YEAR = 2023
+
 
 ############################################################
 # Helpers
@@ -162,6 +166,13 @@ def get_sales_lf(filename: str) -> pl.LazyFrame:
     return lf
 
 
+def get_cpi_lf(filename: str) -> pl.LazyFrame:
+    cols = ["year", "annual"]
+    lf = read_csv(filename, cols=cols)
+    lf = lf.select(pl.col("year"), pl.col("annual").alias("cpi"))
+    return lf
+
+
 def add_maui_region_col(lf: pl.LazyFrame) -> pl.LazyFrame:
     # Zone and section are the 2nd and 3rd digits in the TMK.
     # Zone and section neatly define the different regions of
@@ -175,6 +186,7 @@ def add_maui_region_col(lf: pl.LazyFrame) -> pl.LazyFrame:
     south_maui_zs = [21, 39]
     east_maui_zs = [zs for zs in range(11, 20)]
     molokai_zs = [zs for zs in range(50, 60)]
+    lanai_zs = [49]
 
     lf = lf.with_columns(
         pl.col("tmk")
@@ -195,6 +207,7 @@ def add_maui_region_col(lf: pl.LazyFrame) -> pl.LazyFrame:
         pl.col("zone_section").is_in(south_maui_zs).alias("is_south_maui"),
         pl.col("zone_section").is_in(east_maui_zs).alias("is_east_maui"),
         pl.col("zone_section").is_in(molokai_zs).alias("is_molokai"),
+        pl.col("zone_section").is_in(lanai_zs).alias("is_lanai"),
     )
 
     # Also create a single "region" column
@@ -213,7 +226,9 @@ def add_maui_region_col(lf: pl.LazyFrame) -> pl.LazyFrame:
         .then(pl.lit("East Maui"))
         .when(pl.col("is_molokai"))
         .then(pl.lit("Molokai"))
-        .otherwise(pl.lit("Unknown"))
+        .when(pl.col("is_lanai"))
+        .then(pl.lit("Lanai"))
+        .otherwise(None)
         .alias("region")
     )
 
@@ -302,6 +317,82 @@ def add_resident_type_columns(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf
 
 
+def adjust_for_inflation(
+    lf: pl.LazyFrame, cpi_lf: pl.LazyFrame, col: str
+) -> pl.LazyFrame:
+    base_cpi = (
+        cpi_lf.filter(pl.col("year").eq(INFLATION_BASE_YEAR))
+        .select("cpi")
+        .collect()
+        .item()
+    )
+
+    lf = (
+        lf.with_columns(pl.col("year").cast(pl.Int64))
+        .join(cpi_lf, on="year", how="left")
+        .with_columns(
+            pl.col(col)
+            .truediv("cpi")
+            .mul(base_cpi)
+            .round(0)
+            .cast(pl.Int64)
+            .alias(f"adj_{col}")
+        )
+        .drop("cpi")
+    )
+    return lf
+
+
+def property_sales(
+    assessments_filename_2024: str,
+    assessments_filename_2023: str,
+    dwellings_filename: str,
+    owners_filename: str,
+    sales_filename: str,
+    cpi_filename: str,
+    is_condo: bool,
+) -> None:
+    # Join all of the data into a single lazy frame
+    lf = get_combined_lf(
+        assessments_filename_2024,
+        assessments_filename_2023,
+        dwellings_filename,
+        owners_filename,
+    )
+
+    # lf will only have one row per tmk (property).
+    # But, there could be multiple sales for each property, so
+    # lf_with_sales will have multiple rows for each tmk that is
+    # sold multiple times.
+    # Note that inner join drops tmks with no sales.
+    sales_lf = get_sales_lf(sales_filename)
+    lf_with_sales = lf.join(sales_lf, on="tmk", how="inner")
+
+    # Create column with inflation adjusted sale price
+    cpi_lf = get_cpi_lf(cpi_filename)
+    lf_with_sales = lf_with_sales.with_columns(
+        pl.col("sale_year").alias("year")
+    ).drop("sale_year")
+    lf_with_sales = adjust_for_inflation(lf_with_sales, cpi_lf, "price")
+
+    # Filter to just single family homes or condos.
+    # Get median sale price and sale count for each year in each region.
+    lf_sales_summary = (
+        lf_with_sales.filter(pl.col("is_condo").eq(is_condo))
+        .group_by("region", "year")
+        .agg(
+            pl.col("price").median().cast(pl.Int64),
+            pl.col("adj_price").median().cast(pl.Int64),
+            pl.len().alias("count"),
+        )
+        .sort("region", "year")
+    )
+
+    # Write results
+    df = lf_sales_summary.collect()
+    print(df.write_csv(None))
+
+
 ############################################################
 # Entrypoint
 ############################################################
@@ -313,6 +404,8 @@ _assessments23_help = (
 )
 _dwellings_help = "Name of dwellings csv file from Maui County RPAD"
 _owners_help = "Name of dwellings csv file from Maui County RPAD"
+_sales_help = "Name of sales csv file from Maui County RPAD"
+_cpi_help = "Name of CPI csv file downloaded from US BLS"
 
 
 @app.command()
@@ -329,30 +422,54 @@ def single_family_home_sales(
     owners_filename: Annotated[
         str, typer.Option("--owners", "-o", help=_owners_help)
     ],
-    sales_filename: Annotated[str, typer.Option("--sales", "-s", help="")],
+    sales_filename: Annotated[
+        str, typer.Option("--sales", "-s", help=_sales_help)
+    ],
+    cpi_filename: Annotated[
+        str, typer.Option("--cpi", "-c", help=_cpi_help)
+    ],
 ) -> None:
-    # Join all of the data into a single lazy frame
-    lf = get_combined_lf(
+    property_sales(
         assessments_filename_2024,
         assessments_filename_2023,
         dwellings_filename,
         owners_filename,
+        sales_filename,
+        cpi_filename,
+        is_condo=False,
     )
-
-    # lf will only have one row per tmk (property).
-    # But, there could be multiple sales for each property, so
-    # lf_with_sales will have multiple rows for each tmk that is
-    # sold multiple times.
-    # Note that left join also preserves tmks with no sales.
-    sales_lf = get_sales_lf(sales_filename)
-    lf_with_sales = lf.join(sales_lf, on="tmk", how="left")
-
-    # TODO TODO TODO
 
 
 @app.command()
-def dummy() -> None:
-    pass
+def condo_sales(
+    assessments_filename_2024: Annotated[
+        str, typer.Option("--assessments24", "-a", help=_assessments24_help)
+    ],
+    assessments_filename_2023: Annotated[
+        str, typer.Option("--assessments23", "-b", help=_assessments23_help)
+    ],
+    dwellings_filename: Annotated[
+        str, typer.Option("--dwellings", "-d", help=_dwellings_help)
+    ],
+    owners_filename: Annotated[
+        str, typer.Option("--owners", "-o", help=_owners_help)
+    ],
+    sales_filename: Annotated[
+        str, typer.Option("--sales", "-s", help=_sales_help)
+    ],
+    cpi_filename: Annotated[
+        str, typer.Option("--cpi", "-c", help=_cpi_help)
+    ],
+) -> None:
+    property_sales(
+        assessments_filename_2024,
+        assessments_filename_2023,
+        dwellings_filename,
+        owners_filename,
+        sales_filename,
+        cpi_filename,
+        is_condo=True,
+    )
 
 
 ############################################################
