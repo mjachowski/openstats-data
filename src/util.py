@@ -43,7 +43,11 @@ def read_csv(
         )
         lf.sink_ipc(fname_feather)
 
-    lf = pl.scan_csv(fname_csv, truncate_ragged_lines=truncate_ragged_lines)
+    lf = pl.scan_csv(
+        fname_csv,
+        truncate_ragged_lines=truncate_ragged_lines,
+        ignore_errors=True,
+    )
     schema = lf.collect_schema()
 
     # Subset to columns of interest and make all column names lowercase.
