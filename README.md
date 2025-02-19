@@ -23,6 +23,23 @@ When you are done, exit your virtual environment:
 deactivate
 ```
 
+## Maui County Real Property Assessment Division (RPAD) data
+
+Also known as Maui County Real Property Tax (RPT) data. Download the data from the [Maui County Document Center](https://www.mauicounty.gov/DocumentCenter/Index/231).
+
+Interestingly, sales data is updated frequently (weekly?), but the rest of the property tax data is updated once per year in April.
+
+The data is in a non-ideal fixed-width format. Convert it to csv format:
+```bash
+cd src/
+
+# Get help message
+python parse-maui-rpad.py parse-assessments --help
+
+# Example command. Replace bracketed argument with actual filenames.
+python parse-maui-rpad.py parse-assessments -f [raw_assessment_file] > out/assessments.csv
+```
+
 ## Household Income
 Get the data:
 
@@ -52,6 +69,8 @@ The data sets are:
 
 Generate inflation-adjusted household incomes for major regions of Maui:
 ```bash
+cd src/
+
 # Get help message
 python nhgis.py household-income --help
 

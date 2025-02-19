@@ -196,7 +196,7 @@ def aggregate_median_by_region(
 
 
 ############################################################
-# Entrypoint
+# Entrypoints
 ############################################################
 _income_help = (
     "Name of household income csv file downloaded from IPUMS NHGIS"
@@ -208,7 +208,7 @@ _cpi_help = "Name of CPI csv file downloaded from US BLS"
 
 
 @app.command()
-def household_income(
+def maui_household_income(
     income_filename: Annotated[
         str, typer.Option("--income", "-i", help=_income_help)
     ],
@@ -219,6 +219,22 @@ def household_income(
         str, typer.Option("--cpi", "-c", help=_cpi_help)
     ],
 ) -> None:
+    """Calculate inflation-adjusted median household income for different regions of Maui.
+
+    Given NHGIS household income and population data at the census
+    tract level, calculate the median household income for each
+    major region of Maui. Use Hawaii CPI data to adjust incomes for
+    inflation.
+
+    Args:
+        income_filename (str): NHGIS household income data, census tract level
+        population_filename (str): NHGIS population data, census tract level
+        cpi_filename (str): CPI for all items in ubran Hawaii
+
+    Returns:
+        Nothing. It prints the results as a csv to stdout.
+    """
+
     income_lf = get_income_lf(income_filename)
     population_lf = get_population_lf(population_filename)
     cpi_lf = get_cpi_lf(cpi_filename)
