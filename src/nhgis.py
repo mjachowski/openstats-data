@@ -13,7 +13,7 @@ app = typer.Typer()
 INCOME_INFLATION_BASE_YEAR = 2020
 
 TRACT_TO_REGION_MAP = {
-    30100: None,  # Hana
+    30100: "East Maui",  # Hana
     30200: "Upcountry",  # Haiku
     30301: "Upcountry",  # Kula
     30302: "South Maui",  # Wailea (2000)
@@ -35,9 +35,9 @@ TRACT_TO_REGION_MAP = {
     31300: "Central Maui",  # Puunene
     31400: "West Maui",  # Lahaina
     31500: "West Maui",  # North West Maui
-    31600: None,  # Lanai
-    31700: None,  # Molokai
-    31800: None,  # Molokai
+    31600: "Lanai",  # Lanai
+    31700: "Molokai",  # Molokai
+    31800: "Molokai",  # Molokai
     31900: "Upcountry",  # Spreckelsville, and Kalawao (?)
     32000: "West Maui",  # Launiopoko
 }
@@ -213,16 +213,8 @@ def interpolate_income_lf(
     # Create cross join of all years and regions
     all_years_and_regions = all_years.join(regions, how="cross")
 
-    # Prepend mean 1980 data to fred_lf
-    mean_1980_values_lf = (
-        lf.filter(pl.col("year").eq(1980))
-        .group_by("year")
-        .agg(pl.col(col).median().round(0).cast(pl.Int64))
-    )
-    fred_plus_lf = pl.concat([mean_1980_values_lf, fred_lf])
-
     # Calculate ratio of each region to ference income at known points
-    ratios = lf.join(fred_plus_lf, on="year", suffix="_ref").with_columns(
+    ratios = lf.join(fred_lf, on="year", suffix="_ref").with_columns(
         pl.col(col)
         .truediv(pl.col(f"{col}_ref"))
         .alias("region_reference_ratio")
@@ -250,13 +242,12 @@ def interpolate_income_lf(
 
     # Join with reference data and calculate final interpolated values
     final_interpolated = (
-        interpolated_ratios.join(fred_plus_lf, on="year", how="full")
+        interpolated_ratios.join(fred_lf, on="year", how="inner")
         .with_columns(
             pl.col("interpolated_ratio")
             .mul(pl.col(col))
             .round(0)
             .cast(pl.Int64)
-            .forward_fill()
             .alias("interpolated_income")
         )
         .select("year", "region", pl.col("interpolated_income").alias(col))
@@ -359,6 +350,11 @@ def maui_household_income(
     lf = adjust_for_inflation(lf, cpi_lf, "median_household_income")
     lf = aggregate_median_by_region(lf, "adj_median_household_income")
 
+    # No census tract level data for Lanai until 1990
+    lf = lf.filter(
+        pl.col("region").ne("Lanai").or_(pl.col("year").ge(1990))
+    )
+
     df = lf.collect()
     print(df.write_csv(None))
 
@@ -428,6 +424,11 @@ def maui_household_income_interpolated(
         fred_lf, cpi_lf, "median_household_income"
     ).drop("median_household_income")
     lf = interpolate_income_lf(lf, fred_lf, "adj_median_household_income")
+
+    # No census tract level data for Lanai until 1990
+    lf = lf.filter(
+        pl.col("region").ne("Lanai").or_(pl.col("year").ge(1990))
+    )
 
     df = lf.collect()
     print(df.write_csv(None))
