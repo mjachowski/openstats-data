@@ -375,6 +375,12 @@ def property_sales(
     ).drop("sale_year")
     lf_with_sales = adjust_for_inflation(lf_with_sales, cpi_lf, "price")
 
+    # Throwout sales with crazy prices (>= $20M). This only noticably
+    # impacts the median sale price on Lanai in one year, where there
+    # were some huge sales.
+    MAX_PRICE = 20e6
+    lf_with_sales = lf_with_sales.filter(pl.col("adj_price").lt(MAX_PRICE))
+
     # Filter to just single family homes or condos.
     # Get median sale price and sale count for each year in each region.
     lf_sales_summary = (
