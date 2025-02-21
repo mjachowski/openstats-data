@@ -297,18 +297,12 @@ def aggregate_median_by_region(
 ############################################################
 # Entrypoints
 ############################################################
-_income_help = (
-    "Name of household income csv file downloaded from IPUMS NHGIS"
-)
-_population_help = (
-    "Name of household income csv file downloaded from IPUMS NHGIS"
-)
-_cpi_help = "Name of CPI csv file downloaded from US BLS"
-_fred_hawaii_income_help = (
-    "Name of Hawaii household income csv file from FRED"
-)
+_income_help = "Household income csv file from IPUMS NHGIS"
+_population_help = "Household income csv file from IPUMS NHGIS"
+_cpi_help = "CPI csv file from US BLS"
+_fred_hawaii_income_help = "Hawaii household income csv file from FRED"
 _fred_maui_income_help = (
-    "Name of Maui estimated household income csv file from FRED"
+    "Maui estimated household income csv file from FRED"
 )
 
 
@@ -324,7 +318,8 @@ def maui_household_income(
         str, typer.Option("--cpi", "-c", help=_cpi_help)
     ],
 ) -> None:
-    """Calculate inflation-adjusted median household income for different regions of Maui.
+    """Calculate inflation-adjusted median household income for
+    different regions of Maui.
 
     Given NHGIS household income and population data at the census
     tract level, calculate the median household income for each
@@ -334,7 +329,8 @@ def maui_household_income(
     Args:
         income_filename (str): NHGIS household income data,
             census tract level
-        population_filename (str): NHGIS population data, census tract level
+        population_filename (str): NHGIS population data,
+            census tract level
         cpi_filename (str): CPI for all items in ubran Hawaii
 
     Returns:
@@ -383,14 +379,17 @@ def maui_household_income_interpolated(
         ),
     ],
 ) -> None:
-    """Calculate inflation-adjusted median household income for different regions of Maui, using FRED household income data to interpolate between census years.
+    """Calculate inflation-adjusted median household income for
+    different regions of Maui, using FRED household income data
+    to interpolate between census years.
 
     Given NHGIS household income and population data at the census
     tract level, calculate the median household income for each
     major region of Maui. Income is only for census years (decennial),
     so we use annual data of Hawaii and Maui household incomes from FRED
-    to interpolate region incomes between census years. Use Hawaii CPI
-    data to adjust incomes for inflation.
+    (Federal Reserve Economic Data) to interpolate region incomes
+    between census years. Use Hawaii CPI data to adjust incomes for
+    inflation.
 
     Args:
         income_filename (str): NHGIS household income data,

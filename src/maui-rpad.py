@@ -40,26 +40,29 @@ INFLATION_BASE_YEAR = 2023
 # Helpers
 ############################################################
 def get_assessments_lf(
-    filename_2024: str, filename_2023: str
+    filename_2024: str, filename_2023: str = None
 ) -> pl.LazyFrame:
     cols = ["tmk", "tax_rate_class"]
-    lf1 = read_csv(filename_2024, cols=cols)
-
-    # Assessments in 2024 are 0, so get them from another year.
-    cols = [
-        "tmk",
-        "assessed_building_value",
-        "assessed_land_value",
-        "building_exemption",
-    ]
-    lf2 = read_csv(filename_2023, cols=cols)
+    lf = read_csv(filename_2024, cols=cols)
 
     # There are a few bad rows, get rid of them.
-    lf1 = lf1.filter(pl.col("tmk").cast(str).str.len_chars() == 13)
-    lf2 = lf2.filter(pl.col("tmk").cast(str).str.len_chars() == 13)
+    lf = lf.filter(pl.col("tmk").cast(str).str.len_chars() == 13)
 
-    # Join tax class and assessment data.
-    lf = lf1.join(lf2, on="tmk", how="left")
+    # Assessments in 2024 are 0, so get them from another year.
+    if filename_2023 is not None:
+        cols = [
+            "tmk",
+            "assessed_building_value",
+            "assessed_land_value",
+            "building_exemption",
+        ]
+        lf2 = read_csv(filename_2023, cols=cols)
+
+        # There are a few bad rows, get rid of them.
+        lf2 = lf2.filter(pl.col("tmk").cast(str).str.len_chars() == 13)
+
+        # Join tax class and assessment data.
+        lf = lf.join(lf2, on="tmk", how="left")
 
     # Enrich and filter lazy frame.
     lf = add_maui_region_col(lf)
@@ -95,7 +98,16 @@ def get_dwellings_lf(filename: str) -> pl.LazyFrame:
             .otherwise(None),
         )
     )
+
     return lf
+
+
+def aggregate_dwellings_by_tmk(lf: pl.LazyFrame) -> pl.LazyFrame:
+    return (
+        lf.sort(["tmk", "sf_of_living_area"], descending=[False, True])
+        .group_by("tmk")
+        .first()
+    )
 
 
 def get_owners_lf(filename: str) -> pl.LazyFrame:
@@ -344,23 +356,34 @@ def adjust_for_inflation(
 
 
 def property_sales(
-    assessments_filename_2024: str,
-    assessments_filename_2023: str,
+    assessments_filename: str,
     dwellings_filename: str,
-    owners_filename: str,
     sales_filename: str,
     cpi_filename: str,
     is_condo: bool,
 ) -> None:
-    # Join all of the data into a single lazy frame
-    lf = get_combined_lf(
-        assessments_filename_2024,
-        assessments_filename_2023,
-        dwellings_filename,
-        owners_filename,
-    )
+    # Get assessment data, this tells us which properties are residential.
+    assessment_lf = get_assessments_lf(assessments_filename)
+    assessment_lf = add_maui_region_col(assessment_lf)
+    assessment_lf = filter_to_residential(assessment_lf)
 
-    # lf will only have one row per tmk (property).
+    # Exactly 3 TMKs (out of oer 64,000 residential TMKs) show up twice
+    # in the assessment data because they are classified as having two
+    # residential property tax classes, either short-term rental and
+    # non-owner occupied, or owner-occupied and non-owner occupied.
+    # The precise classification does not matter for analyzing property
+    # sales, so we just keep the first one for each.
+    assessment_lf = assessment_lf.group_by("tmk").first()
+
+    # Get dwellings and just consider the largest dwelling for each TMK.
+    dwellings_lf = get_dwellings_lf(dwellings_filename)
+    dwellings_lf = aggregate_dwellings_by_tmk(dwellings_lf)
+
+    # Inner join with dwellings to only consider properties with
+    # dwellings, excluding undeveloped lots.
+    lf = assessment_lf.join(dwellings_lf, on="tmk", how="inner")
+
+    # lf only has one row per tmk (property).
     # But, there could be multiple sales for each property, so
     # lf_with_sales will have multiple rows for each tmk that is
     # sold multiple times.
@@ -377,7 +400,7 @@ def property_sales(
 
     # Throwout sales with crazy prices (>= $20M). This only noticably
     # impacts the median sale price on Lanai in one year, where there
-    # were some huge sales.
+    # were very few huge sales.
     MAX_PRICE = 20e6
     lf_with_sales = lf_with_sales.filter(pl.col("adj_price").lt(MAX_PRICE))
 
@@ -400,33 +423,23 @@ def property_sales(
 
 
 ############################################################
-# Entrypoint
+# Entrypoints
 ############################################################
-_assessments24_help = (
-    "Name of 2024 assessments csv file from Maui County RPAD"
-)
-_assessments23_help = (
-    "Name of 2023 assessments csv file from Maui County RPAD"
-)
-_dwellings_help = "Name of dwellings csv file from Maui County RPAD"
-_owners_help = "Name of dwellings csv file from Maui County RPAD"
-_sales_help = "Name of sales csv file from Maui County RPAD"
-_cpi_help = "Name of CPI csv file downloaded from US BLS"
+_assessments24_help = "Assessments (2024) csv file from Maui County RPAD"
+_assessments23_help = "Assessments (2023) csv file from Maui County RPAD"
+_dwellings_help = "Dwellings csv file from Maui County RPAD"
+_owners_help = "Dwellings csv file from Maui County RPAD"
+_sales_help = "Sales csv file from Maui County RPAD"
+_cpi_help = "CPI csv file downloaded from US BLS"
 
 
 @app.command()
 def single_family_home_sales(
-    assessments_filename_2024: Annotated[
-        str, typer.Option("--assessments24", "-a", help=_assessments24_help)
-    ],
-    assessments_filename_2023: Annotated[
-        str, typer.Option("--assessments23", "-b", help=_assessments23_help)
+    assessments_filename: Annotated[
+        str, typer.Option("--assessments", "-a", help=_assessments24_help)
     ],
     dwellings_filename: Annotated[
         str, typer.Option("--dwellings", "-d", help=_dwellings_help)
-    ],
-    owners_filename: Annotated[
-        str, typer.Option("--owners", "-o", help=_owners_help)
     ],
     sales_filename: Annotated[
         str, typer.Option("--sales", "-s", help=_sales_help)
@@ -435,11 +448,23 @@ def single_family_home_sales(
         str, typer.Option("--cpi", "-c", help=_cpi_help)
     ],
 ) -> None:
+    """Calculate inflation-adjusted median single family home sale
+    prices for different regions of Maui.
+
+    Given Maui County Real Property Assessment Division (RPAD) data,
+    calculate the median single family home sale price for each major
+    region of Maui. Use Hawaii CPI data to adjust prices for inflation.
+
+    Args:
+        assessments_filename (str): RPAD assessment data
+        dwellings_filename (str): RPAD dwellings data
+        sales_filename (str): RPAD sales data
+        cpi_filename (str): CPI for all items in ubran Hawaii
+    """
+
     property_sales(
-        assessments_filename_2024,
-        assessments_filename_2023,
+        assessments_filename,
         dwellings_filename,
-        owners_filename,
         sales_filename,
         cpi_filename,
         is_condo=False,
@@ -448,17 +473,11 @@ def single_family_home_sales(
 
 @app.command()
 def condo_sales(
-    assessments_filename_2024: Annotated[
-        str, typer.Option("--assessments24", "-a", help=_assessments24_help)
-    ],
-    assessments_filename_2023: Annotated[
-        str, typer.Option("--assessments23", "-b", help=_assessments23_help)
+    assessments_filename: Annotated[
+        str, typer.Option("--assessments", "-a", help=_assessments24_help)
     ],
     dwellings_filename: Annotated[
         str, typer.Option("--dwellings", "-d", help=_dwellings_help)
-    ],
-    owners_filename: Annotated[
-        str, typer.Option("--owners", "-o", help=_owners_help)
     ],
     sales_filename: Annotated[
         str, typer.Option("--sales", "-s", help=_sales_help)
@@ -467,15 +486,65 @@ def condo_sales(
         str, typer.Option("--cpi", "-c", help=_cpi_help)
     ],
 ) -> None:
+    """Calculate inflation-adjusted median condo sale prices for
+    different regions of Maui.
+
+    Given Maui County Real Property Assessment Division (RPAD) data,
+    calculate the median single family home sale price for each major
+    region of Maui. Use Hawaii CPI data to adjust prices for inflation.
+
+    Args:
+        assessments_filename (str): RPAD assessment data
+        dwellings_filename (str): RPAD dwellings data
+        sales_filename (str): RPAD sales data
+        cpi_filename (str): CPI for all items in ubran Hawaii
+    """
+
     property_sales(
-        assessments_filename_2024,
-        assessments_filename_2023,
+        assessments_filename,
         dwellings_filename,
-        owners_filename,
         sales_filename,
         cpi_filename,
         is_condo=True,
     )
+
+
+# @app.command()
+# def dummy(
+#     assessments_filename_2024: Annotated[
+#         str, typer.Option("--assessments24", "-a", help=_assessments24_help)
+#     ],
+#     assessments_filename_2023: Annotated[
+#         str, typer.Option("--assessments23", "-b", help=_assessments23_help)
+#     ],
+#     dwellings_filename: Annotated[
+#         str, typer.Option("--dwellings", "-d", help=_dwellings_help)
+#     ],
+#     owners_filename: Annotated[
+#         str, typer.Option("--owners", "-o", help=_owners_help)
+#     ],
+#     sales_filename: Annotated[
+#         str, typer.Option("--sales", "-s", help=_sales_help)
+#     ],
+#     cpi_filename: Annotated[
+#         str, typer.Option("--cpi", "-c", help=_cpi_help)
+#     ],
+# ) -> None:
+#     """Calculate some statistic for Maui homes.
+#
+#     Describe the statistic here.
+#
+#     Args:
+#         assessments_filename_2024 (str): RPAD assessment data (current)
+#         assessments_filename_2023 (str): RPAD assessment data from 2023,
+#             only used for building assessments, which are set to 0 for
+#             many Lahaina properties in the current data
+#         dwellings_filename (str): RPAD dwellings data (current)
+#         owners_filename (str): RPAD owners data (current)
+#         sales_filename (str): RPAD sales data (current)
+#         cpi_filename (str): CPI for all items in ubran Hawaii
+#     """
+#     pass
 
 
 ############################################################

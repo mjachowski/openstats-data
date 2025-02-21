@@ -40,6 +40,16 @@ python parse-maui-rpad.py parse-assessments --help
 python parse-maui-rpad.py parse-assessments -f [raw_assessment_file] > out/assessments.csv
 ```
 
+## Single Family Home and Condo Prices
+Use the parsed RPAD data generated in the section.
+
+```bash
+cd src/
+
+# Example command. Replace bracketed argument with actual filenames.
+python maui-rpad.py single-family-home-sales -a [assessments.csv] -d [dwellings.csv] -s [sales.csv] -c [cpi.csv] > out/maui-sfh-sales.csv
+```
+
 ## Household Income
 Get the data:
 
