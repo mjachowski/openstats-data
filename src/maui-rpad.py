@@ -126,7 +126,15 @@ def get_owners_lf(filename: str) -> pl.LazyFrame:
 
 
 def get_sales_lf(filename: str) -> pl.LazyFrame:
-    cols = ["parid", "saledate", "recorddate", "price"]
+    cols = [
+        "parid",
+        "saledate",
+        "recorddate",
+        "price",
+        "instruno",
+        "landcourt_no",
+        "cert_no",
+    ]
     lf = read_csv(filename, cols=cols, truncate_ragged_lines=True)
 
     MIN_PRICE = 20000
@@ -167,6 +175,11 @@ def get_sales_lf(filename: str) -> pl.LazyFrame:
             )
             .alias("sale_year"),
             pl.col("price"),
+            pl.col("saledate"),
+            pl.col("recorddate"),
+            pl.col("instruno"),
+            pl.col("landcourt_no"),
+            pl.col("cert_no"),
         )
         .filter(
             pl.col("price").gt(MIN_PRICE)
@@ -391,18 +404,26 @@ def property_sales(
     sales_lf = get_sales_lf(sales_filename)
     lf_with_sales = lf.join(sales_lf, on="tmk", how="inner")
 
+    # Sometimes multiple parcels are sold at once, and they all
+    # record as the same sale price. These are identified by rows
+    # having the same saledate, price, recorddate, instruno,
+    # landcourt_no, and cert_no. In this case, just keep one of
+    # the sales because we only want to count the sale once.
+    lf_with_sales = lf_with_sales.group_by(
+        "saledate",
+        "price",
+        "recorddate",
+        "instruno",
+        "landcourt_no",
+        "cert_no",
+    ).first()
+
     # Create column with inflation adjusted sale price
     cpi_lf = get_cpi_lf(cpi_filename)
     lf_with_sales = lf_with_sales.with_columns(
         pl.col("sale_year").alias("year")
     ).drop("sale_year")
     lf_with_sales = adjust_for_inflation(lf_with_sales, cpi_lf, "price")
-
-    # Throwout sales with crazy prices (>= $20M). This only noticably
-    # impacts the median sale price on Lanai in one year, where there
-    # were very few huge sales.
-    MAX_PRICE = 20e6
-    lf_with_sales = lf_with_sales.filter(pl.col("adj_price").lt(MAX_PRICE))
 
     # Filter to just single family homes or condos.
     # Get median sale price and sale count for each year in each region.

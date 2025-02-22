@@ -192,6 +192,34 @@ def adjust_for_inflation(
     return lf
 
 
+def add_actual_col(
+    lf: pl.LazyFrame, cpi_lf: pl.LazyFrame, col: str
+) -> pl.LazyFrame:
+    # This is the opposite of adjust_for_inflation.
+    # Given an adjusted column, add a column for the non-adjusted value.
+    base_cpi = (
+        cpi_lf.filter(pl.col("year").eq(INCOME_INFLATION_BASE_YEAR))
+        .select("cpi")
+        .collect()
+        .item()
+    )
+
+    lf = (
+        lf.with_columns(pl.col("year").cast(pl.Int64))
+        .join(cpi_lf, on="year", how="left")
+        .with_columns(
+            pl.col(f"adj_{col}")
+            .truediv(base_cpi)
+            .mul("cpi")
+            .round(0)
+            .cast(pl.Int64)
+            .alias(col)
+        )
+        .drop("cpi")
+    )
+    return lf
+
+
 def interpolate_income_lf(
     lf: pl.LazyFrame, fred_lf: pl.LazyFrame, col: str
 ) -> pl.LazyFrame:
@@ -346,6 +374,9 @@ def maui_household_income(
     lf = adjust_for_inflation(lf, cpi_lf, "median_household_income")
     lf = aggregate_median_by_region(lf, "adj_median_household_income")
 
+    # Add column with actual (not inflation-adjusted) incomes
+    lf = add_actual_col(lf, cpi_lf, "median_household_income")
+
     # No census tract level data for Lanai until 1990
     lf = lf.filter(
         pl.col("region").ne("Lanai").or_(pl.col("year").ge(1990))
@@ -423,6 +454,9 @@ def maui_household_income_interpolated(
         fred_lf, cpi_lf, "median_household_income"
     ).drop("median_household_income")
     lf = interpolate_income_lf(lf, fred_lf, "adj_median_household_income")
+
+    # Add column with actual (not inflation-adjusted) incomes
+    lf = add_actual_col(lf, cpi_lf, "median_household_income")
 
     # No census tract level data for Lanai until 1990
     lf = lf.filter(
