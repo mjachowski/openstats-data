@@ -1,6 +1,7 @@
 import polars as pl
 import typer
 from typing_extensions import Annotated
+from github_permalink import github_permalink, get_current_permalink
 
 from util import read_csv
 
@@ -40,7 +41,7 @@ INFLATION_BASE_YEAR = 2023
 # Helpers
 ############################################################
 def get_assessments_lf(
-    filename_2024: str, filename_2023: str = None
+    filename_2024: str, filename_2023: str | None = None
 ) -> pl.LazyFrame:
     cols = ["tmk", "tax_rate_class"]
     lf = read_csv(filename_2024, cols=cols)
@@ -368,11 +369,13 @@ def adjust_for_inflation(
     return lf
 
 
+@github_permalink
 def property_sales(
     assessments_filename: str,
     dwellings_filename: str,
     sales_filename: str,
     cpi_filename: str,
+    out_filename: str,
     is_condo: bool,
 ) -> None:
     # Get assessment data, this tells us which properties are residential.
@@ -440,7 +443,12 @@ def property_sales(
 
     # Write results
     df = lf_sales_summary.collect()
-    print(df.write_csv(None))
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
 
 
 ############################################################
@@ -452,6 +460,7 @@ _dwellings_help = "Dwellings csv file from Maui County RPAD"
 _owners_help = "Dwellings csv file from Maui County RPAD"
 _sales_help = "Sales csv file from Maui County RPAD"
 _cpi_help = "CPI csv file downloaded from US BLS"
+_out_help = "Output filename (csv format)"
 
 
 @app.command()
@@ -468,6 +477,9 @@ def single_family_home_sales(
     cpi_filename: Annotated[
         str, typer.Option("--cpi", "-c", help=_cpi_help)
     ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
 ) -> None:
     """Calculate inflation-adjusted median single family home sale
     prices for different regions of Maui.
@@ -480,7 +492,8 @@ def single_family_home_sales(
         assessments_filename (str): RPAD assessment data
         dwellings_filename (str): RPAD dwellings data
         sales_filename (str): RPAD sales data
-        cpi_filename (str): CPI for all items in ubran Hawaii
+        cpi_filename (str): CPI for all items in urban Hawaii
+        out_filename (str): Output filename (csv format)
     """
 
     property_sales(
@@ -488,6 +501,7 @@ def single_family_home_sales(
         dwellings_filename,
         sales_filename,
         cpi_filename,
+        out_filename,
         is_condo=False,
     )
 
@@ -506,6 +520,9 @@ def condo_sales(
     cpi_filename: Annotated[
         str, typer.Option("--cpi", "-c", help=_cpi_help)
     ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
 ) -> None:
     """Calculate inflation-adjusted median condo sale prices for
     different regions of Maui.
@@ -518,7 +535,8 @@ def condo_sales(
         assessments_filename (str): RPAD assessment data
         dwellings_filename (str): RPAD dwellings data
         sales_filename (str): RPAD sales data
-        cpi_filename (str): CPI for all items in ubran Hawaii
+        cpi_filename (str): CPI for all items in urban Hawaii
+        out_filename (str): Output filename (csv format)
     """
 
     property_sales(
@@ -526,10 +544,12 @@ def condo_sales(
         dwellings_filename,
         sales_filename,
         cpi_filename,
+        out_filename,
         is_condo=True,
     )
 
 
+# @github_permalink
 # @app.command()
 # def dummy(
 #     assessments_filename_2024: Annotated[
@@ -563,7 +583,7 @@ def condo_sales(
 #         dwellings_filename (str): RPAD dwellings data (current)
 #         owners_filename (str): RPAD owners data (current)
 #         sales_filename (str): RPAD sales data (current)
-#         cpi_filename (str): CPI for all items in ubran Hawaii
+#         cpi_filename (str): CPI for all items in urban Hawaii
 #     """
 #     pass
 

@@ -1,6 +1,7 @@
 import polars as pl
 import typer
 from typing_extensions import Annotated
+from github_permalink import github_permalink, get_current_permalink
 
 from util import read_csv
 
@@ -332,8 +333,10 @@ _fred_hawaii_income_help = "Hawaii household income csv file from FRED"
 _fred_maui_income_help = (
     "Maui estimated household income csv file from FRED"
 )
+_out_help = "Output filename (csv format)"
 
 
+@github_permalink
 @app.command()
 def maui_household_income(
     income_filename: Annotated[
@@ -344,6 +347,9 @@ def maui_household_income(
     ],
     cpi_filename: Annotated[
         str, typer.Option("--cpi", "-c", help=_cpi_help)
+    ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
     ],
 ) -> None:
     """Calculate inflation-adjusted median household income for
@@ -360,9 +366,7 @@ def maui_household_income(
         population_filename (str): NHGIS population data,
             census tract level
         cpi_filename (str): CPI for all items in ubran Hawaii
-
-    Returns:
-        Nothing. It prints the results as a csv to stdout.
+        out_filename (str): Output filename (csv format)
     """
 
     income_lf = get_income_lf(income_filename)
@@ -383,9 +387,15 @@ def maui_household_income(
     )
 
     df = lf.collect()
-    print(df.write_csv(None))
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
 
 
+@github_permalink
 @app.command()
 def maui_household_income_interpolated(
     income_filename: Annotated[
@@ -409,6 +419,9 @@ def maui_household_income_interpolated(
             "--fred-hawaii-income", "-g", help=_fred_maui_income_help
         ),
     ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
 ) -> None:
     """Calculate inflation-adjusted median household income for
     different regions of Maui, using FRED household income data
@@ -431,9 +444,7 @@ def maui_household_income_interpolated(
             data for Hawaii
         fred_maui_income_filename (str): Annual estimated median
             household for Maui County
-
-    Returns:
-        Nothing. It prints the results as a csv to stdout.
+        out_filename (str): Output filename (csv format)
     """
 
     income_lf = get_income_lf(income_filename)
@@ -464,7 +475,12 @@ def maui_household_income_interpolated(
     )
 
     df = lf.collect()
-    print(df.write_csv(None))
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
 
 
 @app.command()
