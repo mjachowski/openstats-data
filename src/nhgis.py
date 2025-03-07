@@ -12,6 +12,7 @@ app = typer.Typer()
 # Constants
 ############################################################
 INCOME_INFLATION_BASE_YEAR = 2020
+INTERPOLATED_INCOME_INFLATION_BASE_YEAR = 2023
 
 TRACT_TO_REGION_MAP = {
     30100: "East Maui",  # Hana
@@ -168,10 +169,13 @@ def add_region_column(lf: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def adjust_for_inflation(
-    lf: pl.LazyFrame, cpi_lf: pl.LazyFrame, col: str
+    lf: pl.LazyFrame,
+    cpi_lf: pl.LazyFrame,
+    col: str,
+    inflation_base_year: int = INCOME_INFLATION_BASE_YEAR,
 ) -> pl.LazyFrame:
     base_cpi = (
-        cpi_lf.filter(pl.col("year").eq(INCOME_INFLATION_BASE_YEAR))
+        cpi_lf.filter(pl.col("year").eq(inflation_base_year))
         .select("cpi")
         .collect()
         .item()
@@ -194,12 +198,15 @@ def adjust_for_inflation(
 
 
 def add_actual_col(
-    lf: pl.LazyFrame, cpi_lf: pl.LazyFrame, col: str
+    lf: pl.LazyFrame,
+    cpi_lf: pl.LazyFrame,
+    col: str,
+    inflation_base_year: int = INCOME_INFLATION_BASE_YEAR,
 ) -> pl.LazyFrame:
     # This is the opposite of adjust_for_inflation.
     # Given an adjusted column, add a column for the non-adjusted value.
     base_cpi = (
-        cpi_lf.filter(pl.col("year").eq(INCOME_INFLATION_BASE_YEAR))
+        cpi_lf.filter(pl.col("year").eq(inflation_base_year))
         .select("cpi")
         .collect()
         .item()
@@ -456,18 +463,31 @@ def maui_household_income_interpolated(
     # Calculate inflation-adjusted income from census data only
     lf = get_combined_lf(income_lf, population_lf)
     lf = add_region_column(lf)
-    lf = adjust_for_inflation(lf, cpi_lf, "median_household_income")
+    lf = adjust_for_inflation(
+        lf,
+        cpi_lf,
+        "median_household_income",
+        INTERPOLATED_INCOME_INFLATION_BASE_YEAR,
+    )
     lf = aggregate_median_by_region(lf, "adj_median_household_income")
 
     # Calculate reference inflation-adjusted income from fred data
     fred_lf = get_combined_fred_income_lf(fred_hawaii_lf, fred_maui_lf)
     fred_lf = adjust_for_inflation(
-        fred_lf, cpi_lf, "median_household_income"
+        fred_lf,
+        cpi_lf,
+        "median_household_income",
+        INTERPOLATED_INCOME_INFLATION_BASE_YEAR,
     ).drop("median_household_income")
     lf = interpolate_income_lf(lf, fred_lf, "adj_median_household_income")
 
     # Add column with actual (not inflation-adjusted) incomes
-    lf = add_actual_col(lf, cpi_lf, "median_household_income")
+    lf = add_actual_col(
+        lf,
+        cpi_lf,
+        "median_household_income",
+        INTERPOLATED_INCOME_INFLATION_BASE_YEAR,
+    )
 
     # No census tract level data for Lanai until 1990
     lf = lf.filter(
