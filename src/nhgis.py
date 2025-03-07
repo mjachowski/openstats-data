@@ -1,8 +1,8 @@
 import polars as pl
 import typer
 from typing_extensions import Annotated
-from github_permalink import github_permalink, get_current_permalink
 
+from github_permalink import get_current_permalink, github_permalink
 from util import read_csv
 
 app = typer.Typer()
@@ -481,11 +481,6 @@ def maui_household_income_interpolated(
     txt_filename = out_filename.replace(".csv", ".txt")
     with open(txt_filename, "w") as f:
         f.write(get_current_permalink() or "None")
-
-
-@app.command()
-def dummy() -> None:
-    print("Hello")
 
 
 ############################################################
