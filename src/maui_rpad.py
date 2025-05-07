@@ -1,8 +1,8 @@
 import polars as pl
 import typer
 from typing_extensions import Annotated
-from github_permalink import github_permalink, get_current_permalink
 
+from github_permalink import get_current_permalink, github_permalink
 from util import read_csv
 
 app = typer.Typer()
@@ -275,6 +275,34 @@ def filter_to_residential(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf
 
 
+def get_assessments_dwellings_combined_lf(
+    assessments_filename: str,
+    dwellings_filename: str,
+) -> pl.LazyFrame:
+    # Get assessment data, this tells us which properties are residential.
+    assessment_lf = get_assessments_lf(assessments_filename)
+    assessment_lf = add_maui_region_col(assessment_lf)
+    assessment_lf = filter_to_residential(assessment_lf)
+
+    # Exactly 3 TMKs (out of over 64,000 residential TMKs) show up twice
+    # in the assessment data because they are classified as having two
+    # residential property tax classes, either short-term rental and
+    # non-owner occupied, or owner-occupied and non-owner occupied.
+    # The precise classification does not matter for analyzing property
+    # sales, so we just keep the first one for each.
+    assessment_lf = assessment_lf.group_by("tmk").first()
+
+    # Get dwellings and just consider the largest dwelling for each TMK.
+    dwellings_lf = get_dwellings_lf(dwellings_filename)
+    dwellings_lf = aggregate_dwellings_by_tmk(dwellings_lf)
+
+    # Inner join with dwellings to only consider properties with
+    # dwellings, excluding undeveloped lots.
+    lf = assessment_lf.join(dwellings_lf, on="tmk", how="inner")
+
+    return lf
+
+
 def get_combined_lf(
     assessments_filename_2024: str,
     assessments_filename_2023: str,
@@ -378,26 +406,11 @@ def property_sales(
     out_filename: str,
     is_condo: bool,
 ) -> None:
-    # Get assessment data, this tells us which properties are residential.
-    assessment_lf = get_assessments_lf(assessments_filename)
-    assessment_lf = add_maui_region_col(assessment_lf)
-    assessment_lf = filter_to_residential(assessment_lf)
-
-    # Exactly 3 TMKs (out of oer 64,000 residential TMKs) show up twice
-    # in the assessment data because they are classified as having two
-    # residential property tax classes, either short-term rental and
-    # non-owner occupied, or owner-occupied and non-owner occupied.
-    # The precise classification does not matter for analyzing property
-    # sales, so we just keep the first one for each.
-    assessment_lf = assessment_lf.group_by("tmk").first()
-
-    # Get dwellings and just consider the largest dwelling for each TMK.
-    dwellings_lf = get_dwellings_lf(dwellings_filename)
-    dwellings_lf = aggregate_dwellings_by_tmk(dwellings_lf)
-
-    # Inner join with dwellings to only consider properties with
-    # dwellings, excluding undeveloped lots.
-    lf = assessment_lf.join(dwellings_lf, on="tmk", how="inner")
+    # Get combined lazy frame of all residential properties with at
+    # least once dwelling. Undeveloped lots are excluded.
+    lf = get_assessments_dwellings_combined_lf(
+        assessments_filename, dwellings_filename
+    )
 
     # lf only has one row per tmk (property).
     # But, there could be multiple sales for each property, so
@@ -547,6 +560,102 @@ def condo_sales(
         out_filename,
         is_condo=True,
     )
+
+
+@github_permalink
+@app.command()
+def home_construction_by_decade(
+    assessments_filename: Annotated[
+        str, typer.Option("--assessments", "-a", help=_assessments24_help)
+    ],
+    dwellings_filename: Annotated[
+        str, typer.Option("--dwellings", "-d", help=_dwellings_help)
+    ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
+) -> None:
+    """Calculate home construction rates by decade for
+    different regions of Maui.
+
+    Args:
+        assessments_filename (str): RPAD assessment data
+        dwellings_filename (str): RPAD dwellings data
+        out_filename (str): Output filename (csv format)
+    """
+
+    # Get combined lazy frame of all residential properties with at
+    # least once dwelling. Undeveloped lots are excluded.
+    lf = get_assessments_dwellings_combined_lf(
+        assessments_filename, dwellings_filename
+    )
+
+    MIN_YEAR = 1970
+    MAX_YEAR = 2023
+
+    # Step 1: Filter to recent decades and add decade column
+    base_lf = (
+        lf.filter(pl.col("year_built").ge(MIN_YEAR))
+        .filter(pl.col("year_built").le(MAX_YEAR))
+        .with_columns(
+            pl.col("year_built").floordiv(10).mul(10).alias("decade"),
+        )
+    )
+
+    # Step 2: Calculate min and max years for each decade
+    decade_ranges_lf = (
+        base_lf.group_by("decade")
+        .agg(
+            pl.col("year_built").min().alias("decade_start"),
+            pl.col("year_built").max().alias("decade_end"),
+        )
+        .with_columns(
+            (
+                pl.col("decade_start").cast(pl.Utf8)
+                + "-"
+                + pl.col("decade_end").cast(pl.Utf8)
+            ).alias("decade_desc"),
+            pl.col("decade_end")
+            .sub("decade_start")
+            .add(1)
+            .alias("num_years"),
+        )
+    )
+
+    # Step 3: Count homes by type within each decade and region
+    counts_by_type_lf = base_lf.group_by(
+        "region", "decade", "home_type"
+    ).agg(pl.len().alias("count"))
+
+    # Step 4: Join the decade ranges with the counts
+    joined_lf = (
+        counts_by_type_lf.join(decade_ranges_lf, on="decade", how="left")
+        .sort("region", "decade", "home_type")
+        .select(
+            "decade",
+            "decade_desc",
+            "num_years",
+            "region",
+            "home_type",
+            "count",
+        )
+    )
+
+    # Step 5: Calculate decade yearly averages
+    lf = joined_lf.with_columns(
+        pl.col("count")
+        .floordiv(pl.col("num_years"))
+        .alias("decade_yearly_avg")
+    )
+
+    # Write results
+    df = lf.collect()
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
 
 
 # @github_permalink
