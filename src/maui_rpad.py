@@ -705,6 +705,14 @@ def home_construction_by_decade(
         .alias("decade_region_pct"),
     ).drop("decade_count", "decade_count_all_regions", "num_years")
 
+    # Step 6: Create rows for Maui County, sum across all regions
+    county_lf = lf.filter(pl.col("region").eq("Central Maui")).with_columns(
+        pl.lit("Maui County").alias("region"),
+        pl.col("decade_yearly_avg_all_regions").alias("decade_yearly_avg"),
+        pl.lit(100.0).alias("decade_region_pct"),
+    )
+    lf = pl.concat([lf, county_lf])
+
     # Write results
     df = lf.collect()
     df.write_csv(out_filename)
