@@ -625,28 +625,63 @@ def home_construction_by_decade(
     # Step 3: Count homes by type within each decade and region
     counts_by_type_lf = base_lf.group_by(
         "region", "decade", "home_type"
-    ).agg(pl.len().alias("count"))
+    ).agg(pl.len().alias("decade_count"))
+
+    # Create a complete set of all region, decade, home_type combinations
+    # by creating a cartesian product of all possible values
+    unique_regions = base_lf.select("region").unique()
+    unique_decades = base_lf.select("decade").unique()
+    unique_home_types = base_lf.select("home_type").unique()
+
+    # Create cross joins to generate all possible combinations
+    all_regions_decades = unique_regions.join(unique_decades, how="cross")
+    all_combinations = all_regions_decades.join(
+        unique_home_types, how="cross"
+    )
+
+    # Outer join with the counts to include missing combinations
+    counts_by_type_lf = all_combinations.join(
+        counts_by_type_lf, on=["region", "decade", "home_type"], how="left"
+    ).with_columns(pl.col("decade_count").fill_null(0))
 
     # Step 4: Join the decade ranges with the counts
+    joined_cols = [
+        "home_type",
+        "decade",
+        "decade_desc",
+        "num_years",
+        "region",
+        "decade_count",
+    ]
     joined_lf = (
         counts_by_type_lf.join(decade_ranges_lf, on="decade", how="left")
-        .sort("region", "decade", "home_type")
-        .select(
-            "decade",
-            "decade_desc",
-            "num_years",
-            "region",
-            "home_type",
-            "count",
-        )
+        .sort("home_type", "region", "decade")
+        .select(joined_cols)
     )
+
+    # Create a new home_type called "All Homes" that sums the
+    # decade_count for each home_type, grouped by region and decade
+    all_homes_lf = (
+        joined_lf.group_by("region", "decade")
+        .agg(
+            pl.col("decade_count").sum().alias("decade_count"),
+            pl.col("decade_desc").first(),
+            pl.col("num_years").first(),
+        )
+        .with_columns(pl.lit("All Homes").alias("home_type"))
+        .sort("home_type", "region", "decade")
+        .select(joined_cols)
+    )
+
+    # Combine the original joined_lf with the new all_homes_lf
+    joined_lf = pl.concat([joined_lf, all_homes_lf])
 
     # Step 5: Calculate decade yearly averages
     lf = joined_lf.with_columns(
-        pl.col("count")
+        pl.col("decade_count")
         .floordiv(pl.col("num_years"))
         .alias("decade_yearly_avg")
-    )
+    ).drop("decade_count", "num_years")
 
     # Write results
     df = lf.collect()
