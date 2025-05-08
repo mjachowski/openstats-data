@@ -642,7 +642,17 @@ def home_construction_by_decade(
     # Outer join with the counts to include missing combinations
     counts_by_type_lf = all_combinations.join(
         counts_by_type_lf, on=["region", "decade", "home_type"], how="left"
-    ).with_columns(pl.col("decade_count").fill_null(0))
+    ).with_columns(
+        pl.col("decade_count").fill_null(0),
+    )
+
+    # Total counts across all regions by decade and home type
+    counts_all_regions_lf = base_lf.group_by("decade", "home_type").agg(
+        pl.len().alias("decade_count_all_regions")
+    )
+    counts_by_type_lf = counts_by_type_lf.join(
+        counts_all_regions_lf, on=["decade", "home_type"], how="left"
+    )
 
     # Step 4: Join the decade ranges with the counts
     joined_cols = [
@@ -652,6 +662,7 @@ def home_construction_by_decade(
         "num_years",
         "region",
         "decade_count",
+        "decade_count_all_regions",
     ]
     joined_lf = (
         counts_by_type_lf.join(decade_ranges_lf, on="decade", how="left")
@@ -665,6 +676,9 @@ def home_construction_by_decade(
         joined_lf.group_by("region", "decade")
         .agg(
             pl.col("decade_count").sum().alias("decade_count"),
+            pl.col("decade_count_all_regions")
+            .sum()
+            .alias("decade_count_all_regions"),
             pl.col("decade_desc").first(),
             pl.col("num_years").first(),
         )
@@ -680,8 +694,16 @@ def home_construction_by_decade(
     lf = joined_lf.with_columns(
         pl.col("decade_count")
         .floordiv(pl.col("num_years"))
-        .alias("decade_yearly_avg")
-    ).drop("decade_count", "num_years")
+        .alias("decade_yearly_avg"),
+        pl.col("decade_count_all_regions")
+        .floordiv(pl.col("num_years"))
+        .alias("decade_yearly_avg_all_regions"),
+        pl.col("decade_count")
+        .truediv(pl.col("decade_count_all_regions"))
+        .mul(100)
+        .round(1)
+        .alias("decade_region_pct"),
+    ).drop("decade_count", "decade_count_all_regions", "num_years")
 
     # Write results
     df = lf.collect()
