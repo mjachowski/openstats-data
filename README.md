@@ -41,14 +41,25 @@ python parse-maui-rpad.py parse-assessments -f [raw_assessment_file] > out/asses
 ```
 
 ## Single Family Home and Condo Prices
-Use the parsed RPAD data generated in the section.
+Use the parsed RPAD data generated in the section above.
 
 ```bash
 cd src/
 
 # Example command. Replace bracketed argument with actual filenames.
-python maui-rpad.py single-family-home-sales -a [assessments.csv] -d [dwellings.csv] -s [sales.csv] -c [cpi.csv] > out/maui-sfh-sales.csv
+python maui-rpad.py single-family-home-sales -a [assessments.csv] -d [dwellings.csv] -s [sales.csv] -c [cpi.csv] -o out/maui-sfh-sales.csv
 ```
+
+## Single Family Home and Condo Construction by Decade
+Use the parsed RPAD data generated in the section above.
+
+```bash
+cd src/
+
+# Example command. Replace bracketed argument with actual filenames.
+python maui-rpad.py home-construction-by-decade -a [assessments.csv] -d [dwellings.csv] -o out/maui-construction.csv
+```
+
 
 ## Household Income
 Get the data:
@@ -59,9 +70,14 @@ Get the data:
 The data sets are:
 
 **NHGIS: Median Household Income in Previous Year**
-* Selected years: 1980, 1990, 2000, 2006-2010, 2016-2020
+* Selected years: 1980, 1990, 2000, 2006-2010, 2011-2015, 2016-2020
 * Code: B79
 * Geographic level: Census Tract (by State--County)
+
+**NHGIS: Median Household Income in Previous Year**
+* Selected years: 1980, 1990, 2000, 2006-2010, 2011-2015, 2016-2020
+* Code: B79
+* Geographic level: County (by State)
 
 **NHGIS: Total Population**
 * Selected years: 1970, 1980, 1990, 2000, 2010, 2020
@@ -85,5 +101,10 @@ cd src/
 python nhgis.py household-income --help
 
 # Replace bracketed arguments with actual filename
-python nhgis.py household-income -i [income.csv] -p [population.csv] -c [cpi.csv] > out/maui-household-income.csv
+python nhgis.py household-income -i [income.csv] -j [county-income.csv] -p [population.csv] -c [cpi.csv] -o out/maui-household-income.csv
+```
+
+Generate derived affordability stats from above median sales data and household income data:
+```bash
+python derived.py maui-property-affordability -s [sales.csv] -i [income.csv] -o out/maui-affordability.csv
 ```

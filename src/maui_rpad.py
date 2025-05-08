@@ -454,6 +454,29 @@ def property_sales(
         .sort("region", "year")
     )
 
+    # Now get median sale price and sale count for each year for county.
+    county_lf_sales_summary = (
+        lf_with_sales.filter(pl.col("is_condo").eq(is_condo))
+        .group_by("year")
+        .agg(
+            pl.col("price").median().cast(pl.Int64),
+            pl.col("adj_price").median().cast(pl.Int64),
+            pl.len().alias("count"),
+        )
+        .select(
+            pl.lit("Maui County").alias("region"),
+            "year",
+            "price",
+            "adj_price",
+            "count",
+        )
+        .sort("year")
+    )
+
+    lf_sales_summary = pl.concat(
+        [lf_sales_summary, county_lf_sales_summary]
+    )
+
     # Write results
     df = lf_sales_summary.collect()
     df.write_csv(out_filename)

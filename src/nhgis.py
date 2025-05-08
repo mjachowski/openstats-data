@@ -61,6 +61,23 @@ def get_income_lf(filename: str) -> pl.LazyFrame:
     return lf
 
 
+def get_county_income_lf(filename: str) -> pl.LazyFrame:
+    cols = ["year", "state", "county"]
+    rename_cols = {"b79aa": "median_household_income"}
+    cols += list(rename_cols.keys())
+
+    lf = read_csv(filename, cols=cols)
+    lf = lf.rename(rename_cols)
+    lf = (
+        lf.filter(pl.col("state").eq("Hawaii"))
+        .filter(pl.col("county").eq("Maui County"))
+        .drop("state")
+    )
+    lf = normalize_acs_years(lf)
+    lf = lf.with_columns(pl.col("median_household_income").cast(pl.Int32))
+    return lf
+
+
 def get_population_lf(filename: str) -> pl.LazyFrame:
     cols = ["year", "state", "tracta"]
     rename_cols = {"av0aa": "persons_total"}
@@ -333,7 +350,8 @@ def aggregate_median_by_region(
 ############################################################
 # Entrypoints
 ############################################################
-_income_help = "Household income csv file from IPUMS NHGIS"
+_income_help = "Household income by census tract csv file from IPUMS NHGIS"
+_county_income_help = "Household income by county csv file from IPUMS NHGIS"
 _population_help = "Household income csv file from IPUMS NHGIS"
 _cpi_help = "CPI csv file from US BLS"
 _fred_hawaii_income_help = "Hawaii household income csv file from FRED"
@@ -349,6 +367,9 @@ def maui_household_income(
     income_filename: Annotated[
         str, typer.Option("--income", "-i", help=_income_help)
     ],
+    county_income_filename: Annotated[
+        str, typer.Option("--county_income", "-j", help=_county_income_help)
+    ],
     population_filename: Annotated[
         str, typer.Option("--population", "-p", help=_population_help)
     ],
@@ -360,23 +381,26 @@ def maui_household_income(
     ],
 ) -> None:
     """Calculate inflation-adjusted median household income for
-    different regions of Maui.
+    different regions of Maui and Maui County as a whole.
 
     Given NHGIS household income and population data at the census
-    tract level, calculate the median household income for each
-    major region of Maui. Use Hawaii CPI data to adjust incomes for
-    inflation.
+    tract level, and household income at the county level, calculate
+    the median household income for each major region of Maui. Use
+    Hawaii CPI data to adjust incomes for inflation.
 
     Args:
         income_filename (str): NHGIS household income data,
             census tract level
+        county_income_filename (str): NHGIS household income data,
+            census tract level
         population_filename (str): NHGIS population data,
             census tract level
-        cpi_filename (str): CPI for all items in ubran Hawaii
+        cpi_filename (str): CPI for all items in urban Hawaii
         out_filename (str): Output filename (csv format)
     """
 
     income_lf = get_income_lf(income_filename)
+    county_income_lf = get_county_income_lf(county_income_filename)
     population_lf = get_population_lf(population_filename)
     cpi_lf = get_cpi_lf(cpi_filename)
 
@@ -387,6 +411,18 @@ def maui_household_income(
 
     # Add column with actual (not inflation-adjusted) incomes
     lf = add_actual_col(lf, cpi_lf, "median_household_income")
+
+    # Add county income data
+    clf = adjust_for_inflation(
+        county_income_lf, cpi_lf, "median_household_income"
+    )
+    clf = clf.select(
+        "year",
+        pl.lit("Maui County").alias("region"),
+        "adj_median_household_income",
+        pl.col("median_household_income").cast(pl.Int64),
+    )
+    lf = pl.concat([lf, clf])
 
     # No census tract level data for Lanai until 1990
     lf = lf.filter(
@@ -407,6 +443,9 @@ def maui_household_income(
 def maui_household_income_interpolated(
     income_filename: Annotated[
         str, typer.Option("--income", "-i", help=_income_help)
+    ],
+    county_income_filename: Annotated[
+        str, typer.Option("--county_income", "-j", help=_county_income_help)
     ],
     population_filename: Annotated[
         str, typer.Option("--population", "-p", help=_population_help)
@@ -431,22 +470,24 @@ def maui_household_income_interpolated(
     ],
 ) -> None:
     """Calculate inflation-adjusted median household income for
-    different regions of Maui, using FRED household income data
-    to interpolate between census years.
+    different regions of Maui and Maui County as a whole, using
+    FRED household income data to interpolate between census years.
 
     Given NHGIS household income and population data at the census
-    tract level, calculate the median household income for each
-    major region of Maui. Income is only for census years (decennial),
-    so we use annual data of Hawaii and Maui household incomes from FRED
-    (Federal Reserve Economic Data) to interpolate region incomes
-    between census years. Use Hawaii CPI data to adjust incomes for
-    inflation.
+    tract level, and household income at the county level, calculate
+    the median household income for each major region of Maui. Income
+    is only for census years (decennial), so we use annual data of
+    Hawaii and Maui household incomes from FRED (Federal Reserve
+    Economic Data) to interpolate region incomes between census years.
+    Use Hawaii CPI data to adjust incomes for inflation.
 
     Args:
         income_filename (str): NHGIS household income data,
             census tract level
+        county_income_filename (str): NHGIS household income data,
+            census tract level
         population_filename (str): NHGIS population data, census tract level
-        cpi_filename (str): CPI for all items in ubran Hawaii
+        cpi_filename (str): CPI for all items in urban Hawaii
         fred_hawaii_income_filename (str): Annual median household
             data for Hawaii
         fred_maui_income_filename (str): Annual estimated median
@@ -455,6 +496,7 @@ def maui_household_income_interpolated(
     """
 
     income_lf = get_income_lf(income_filename)
+    county_income_lf = get_county_income_lf(county_income_filename)
     population_lf = get_population_lf(population_filename)
     cpi_lf = get_cpi_lf(cpi_filename)
     fred_hawaii_lf = get_fred_income_lf(fred_hawaii_income_filename)
@@ -471,6 +513,20 @@ def maui_household_income_interpolated(
     )
     lf = aggregate_median_by_region(lf, "adj_median_household_income")
 
+    # Add county income data
+    clf = adjust_for_inflation(
+        county_income_lf,
+        cpi_lf,
+        "median_household_income",
+        INTERPOLATED_INCOME_INFLATION_BASE_YEAR,
+    )
+    clf = clf.select(
+        "year",
+        pl.lit("Maui County").alias("region"),
+        "adj_median_household_income",
+        pl.col("median_household_income").cast(pl.Int64),
+    )
+
     # Calculate reference inflation-adjusted income from fred data
     fred_lf = get_combined_fred_income_lf(fred_hawaii_lf, fred_maui_lf)
     fred_lf = adjust_for_inflation(
@@ -480,6 +536,7 @@ def maui_household_income_interpolated(
         INTERPOLATED_INCOME_INFLATION_BASE_YEAR,
     ).drop("median_household_income")
     lf = interpolate_income_lf(lf, fred_lf, "adj_median_household_income")
+    clf = interpolate_income_lf(clf, fred_lf, "adj_median_household_income")
 
     # Add column with actual (not inflation-adjusted) incomes
     lf = add_actual_col(
@@ -488,6 +545,15 @@ def maui_household_income_interpolated(
         "median_household_income",
         INTERPOLATED_INCOME_INFLATION_BASE_YEAR,
     )
+    clf = add_actual_col(
+        clf,
+        cpi_lf,
+        "median_household_income",
+        INTERPOLATED_INCOME_INFLATION_BASE_YEAR,
+    )
+
+    # Combine census tract level and county data
+    lf = pl.concat([lf, clf])
 
     # No census tract level data for Lanai until 1990
     lf = lf.filter(

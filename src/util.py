@@ -40,6 +40,7 @@ def read_csv(
             fname_csv,
             truncate_ragged_lines=truncate_ragged_lines,
             ignore_errors=True,
+            infer_schema_length=None,
         )
         lf.sink_ipc(fname_feather)
 
@@ -47,6 +48,7 @@ def read_csv(
         fname_csv,
         truncate_ragged_lines=truncate_ragged_lines,
         ignore_errors=True,
+        infer_schema_length=None,
     )
     schema = lf.collect_schema()
 
