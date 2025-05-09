@@ -296,6 +296,14 @@ def get_assessments_dwellings_combined_lf(
     dwellings_lf = get_dwellings_lf(dwellings_filename)
     dwellings_lf = aggregate_dwellings_by_tmk(dwellings_lf)
 
+    # Cast tmk column to int64.
+    assessment_lf = assessment_lf.with_columns(
+        pl.col("tmk").cast(pl.Int64, strict=False)
+    )
+    dwellings_lf = dwellings_lf.with_columns(
+        pl.col("tmk").cast(pl.Int64, strict=False)
+    )
+
     # Inner join with dwellings to only consider properties with
     # dwellings, excluding undeveloped lots.
     lf = assessment_lf.join(dwellings_lf, on="tmk", how="inner")
@@ -648,7 +656,16 @@ def home_construction_by_decade(
     # Step 3: Count homes by type within each decade and region
     counts_by_type_lf = base_lf.group_by(
         "region", "decade", "home_type"
-    ).agg(pl.len().alias("decade_count"))
+    ).agg(
+        pl.len().alias("decade_count"),
+        pl.col("sf_of_living_area").median().alias("sqft_median"),
+    )
+
+    # Get county counts as above, but do not group on region.
+    county_counts_by_type_lf = base_lf.group_by("decade", "home_type").agg(
+        pl.len().alias("decade_count"),
+        pl.col("sf_of_living_area").median().alias("sqft_median"),
+    )
 
     # Create a complete set of all region, decade, home_type combinations
     # by creating a cartesian product of all possible values
@@ -676,6 +693,9 @@ def home_construction_by_decade(
     counts_by_type_lf = counts_by_type_lf.join(
         counts_all_regions_lf, on=["decade", "home_type"], how="left"
     )
+    county_counts_by_type_lf = county_counts_by_type_lf.join(
+        counts_all_regions_lf, on=["decade", "home_type"], how="left"
+    )
 
     # Step 4: Join the decade ranges with the counts
     joined_cols = [
@@ -686,9 +706,18 @@ def home_construction_by_decade(
         "region",
         "decade_count",
         "decade_count_all_regions",
+        "sqft_median",
     ]
     joined_lf = (
         counts_by_type_lf.join(decade_ranges_lf, on="decade", how="left")
+        .sort("home_type", "region", "decade")
+        .select(joined_cols)
+    )
+    county_joined_lf = (
+        county_counts_by_type_lf.join(
+            decade_ranges_lf, on="decade", how="left"
+        )
+        .with_columns(pl.lit("Maui County").alias("region"))
         .sort("home_type", "region", "decade")
         .select(joined_cols)
     )
@@ -705,13 +734,37 @@ def home_construction_by_decade(
             pl.col("decade_desc").first(),
             pl.col("num_years").first(),
         )
-        .with_columns(pl.lit("All Homes").alias("home_type"))
+        .with_columns(
+            pl.lit("All Homes").alias("home_type"),
+            pl.lit(None).alias("sqft_median"),
+        )
         .sort("home_type", "region", "decade")
         .select(joined_cols)
     )
 
-    # Combine the original joined_lf with the new all_homes_lf
-    joined_lf = pl.concat([joined_lf, all_homes_lf])
+    county_all_homes_lf = (
+        county_joined_lf.group_by("decade")
+        .agg(
+            pl.col("region").first(),
+            pl.col("decade_count").sum().alias("decade_count"),
+            pl.col("decade_count_all_regions")
+            .sum()
+            .alias("decade_count_all_regions"),
+            pl.col("decade_desc").first(),
+            pl.col("num_years").first(),
+        )
+        .with_columns(
+            pl.lit("All Homes").alias("home_type"),
+            pl.lit(None).alias("sqft_median"),
+        )
+        .sort("home_type", "region", "decade")
+        .select(joined_cols)
+    )
+
+    # Combine the per region data with the all homes and county data
+    joined_lf = pl.concat(
+        [joined_lf, all_homes_lf, county_joined_lf, county_all_homes_lf]
+    )
 
     # Step 5: Calculate decade yearly averages
     lf = joined_lf.with_columns(
@@ -727,14 +780,6 @@ def home_construction_by_decade(
         .round(1)
         .alias("decade_region_pct"),
     ).drop("decade_count", "decade_count_all_regions", "num_years")
-
-    # Step 6: Create rows for Maui County, sum across all regions
-    county_lf = lf.filter(pl.col("region").eq("Central Maui")).with_columns(
-        pl.lit("Maui County").alias("region"),
-        pl.col("decade_yearly_avg_all_regions").alias("decade_yearly_avg"),
-        pl.lit(100.0).alias("decade_region_pct"),
-    )
-    lf = pl.concat([lf, county_lf])
 
     # Write results
     df = lf.collect()
