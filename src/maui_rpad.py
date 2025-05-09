@@ -687,8 +687,11 @@ def home_construction_by_decade(
     )
 
     # Total counts across all regions by decade and home type
-    counts_all_regions_lf = base_lf.group_by("decade", "home_type").agg(
-        pl.len().alias("decade_count_all_regions")
+    counts_all_regions_lf = county_counts_by_type_lf.select(
+        pl.col("decade"),
+        pl.col("home_type"),
+        pl.col("decade_count").alias("decade_count_all_regions"),
+        pl.col("sqft_median").alias("sqft_median_all_regions"),
     )
     counts_by_type_lf = counts_by_type_lf.join(
         counts_all_regions_lf, on=["decade", "home_type"], how="left"
@@ -707,6 +710,7 @@ def home_construction_by_decade(
         "decade_count",
         "decade_count_all_regions",
         "sqft_median",
+        "sqft_median_all_regions",
     ]
     joined_lf = (
         counts_by_type_lf.join(decade_ranges_lf, on="decade", how="left")
@@ -737,6 +741,7 @@ def home_construction_by_decade(
         .with_columns(
             pl.lit("All Homes").alias("home_type"),
             pl.lit(None).alias("sqft_median"),
+            pl.lit(None).alias("sqft_median_all_regions"),
         )
         .sort("home_type", "region", "decade")
         .select(joined_cols)
@@ -756,6 +761,7 @@ def home_construction_by_decade(
         .with_columns(
             pl.lit("All Homes").alias("home_type"),
             pl.lit(None).alias("sqft_median"),
+            pl.lit(None).alias("sqft_median_all_regions"),
         )
         .sort("home_type", "region", "decade")
         .select(joined_cols)
@@ -779,7 +785,26 @@ def home_construction_by_decade(
         .mul(100)
         .round(1)
         .alias("decade_region_pct"),
+        pl.col("sqft_median")
+        .truediv(pl.col("sqft_median_all_regions"))
+        .mul(100)
+        .round(1)
+        .alias("sqft_median_region_pct"),
     ).drop("decade_count", "decade_count_all_regions", "num_years")
+
+    final_cols = [
+        "home_type",
+        "decade",
+        "decade_desc",
+        "region",
+        "decade_yearly_avg",
+        "decade_yearly_avg_all_regions",
+        "decade_region_pct",
+        "sqft_median",
+        "sqft_median_all_regions",
+        "sqft_median_region_pct",
+    ]
+    lf = lf.select(final_cols)
 
     # Write results
     df = lf.collect()
