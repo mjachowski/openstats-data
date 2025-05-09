@@ -45,6 +45,7 @@ def get_assessments_lf(
 ) -> pl.LazyFrame:
     cols = ["tmk", "tax_rate_class"]
     lf = read_csv(filename_2024, cols=cols)
+    lf = lf.with_columns(pl.col("tmk").cast(pl.Int64, strict=False))
 
     # There are a few bad rows, get rid of them.
     lf = lf.filter(pl.col("tmk").cast(str).str.len_chars() == 13)
@@ -58,6 +59,7 @@ def get_assessments_lf(
             "building_exemption",
         ]
         lf2 = read_csv(filename_2023, cols=cols)
+        lf2 = lf2.with_columns(pl.col("tmk").cast(pl.Int64, strict=False))
 
         # There are a few bad rows, get rid of them.
         lf2 = lf2.filter(pl.col("tmk").cast(str).str.len_chars() == 13)
