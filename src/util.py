@@ -16,7 +16,10 @@ def _norm_col_name(col_name: str) -> str:
 
 
 def read_csv(
-    fname_csv: str, cols: list[str], truncate_ragged_lines: bool = False
+    fname_csv: str,
+    cols: list[str],
+    truncate_ragged_lines: bool = False,
+    skip_rows_after_header: int = 0,
 ) -> pl.LazyFrame:
     """Read a csv file and return a polars lazy frame.
 
@@ -41,6 +44,7 @@ def read_csv(
             truncate_ragged_lines=truncate_ragged_lines,
             ignore_errors=True,
             infer_schema_length=None,
+            skip_rows_after_header=skip_rows_after_header,
         )
         lf.sink_ipc(fname_feather)
 
@@ -49,6 +53,7 @@ def read_csv(
         truncate_ragged_lines=truncate_ragged_lines,
         ignore_errors=True,
         infer_schema_length=None,
+        skip_rows_after_header=skip_rows_after_header,
     )
     schema = lf.collect_schema()
 
