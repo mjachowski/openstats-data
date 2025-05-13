@@ -3,6 +3,7 @@ import typer
 from typing_extensions import Annotated
 
 from github_permalink import get_current_permalink, github_permalink
+from minatoya import MINATOYA_TMKS
 from util import read_csv
 
 app = typer.Typer()
@@ -44,6 +45,13 @@ def get_assessments_lf(
     filename_2024: str, filename_2023: str | None = None
 ) -> pl.LazyFrame:
     cols = ["tmk", "tax_rate_class"]
+    if filename_2023 is None:
+        cols += [
+            "assessed_building_value",
+            "assessed_land_value",
+            "building_exemption",
+        ]
+
     lf = read_csv(filename_2024, cols=cols)
     lf = lf.with_columns(pl.col("tmk").cast(pl.Int64, strict=False))
 
@@ -497,6 +505,99 @@ def property_sales(
         f.write(get_current_permalink() or "None")
 
 
+def calc_condo_characteristics(lf: pl.LazyFrame, desc: str) -> pl.LazyFrame:
+    total_count = lf.select(
+        pl.lit(desc).alias("desc"), pl.len().alias("total_count")
+    )
+    total_count_lit = total_count.collect().item(0, 1)
+
+    year_built = lf.select(
+        pl.col("year_built")
+        .median()
+        .cast(pl.Int32)
+        .alias("median_year_built"),
+    )
+    assessed_value = lf.filter(
+        pl.col("assessed_building_value").gt(0)
+    ).select(
+        pl.col("assessed_building_value")
+        .median()
+        .cast(pl.Int64)
+        .alias("median_assessed_building_value")
+    )
+
+    bedrooms = (
+        lf.group_by("bed_rooms")
+        .agg(pl.len().alias("count"))
+        .with_columns(pl.lit(total_count_lit).alias("total_count"))
+        .with_columns(
+            pl.col("count")
+            .truediv("total_count")
+            .mul(100)
+            .round(1)
+            .alias("pct")
+        )
+    )
+
+    br0 = bedrooms.filter(pl.col("bed_rooms").eq(0)).select(
+        pl.col("pct").alias("pct_0br")
+    )
+    br1 = bedrooms.filter(pl.col("bed_rooms").eq(1)).select(
+        pl.col("pct").alias("pct_1br")
+    )
+    br2 = bedrooms.filter(pl.col("bed_rooms").eq(2)).select(
+        pl.col("pct").alias("pct_2br")
+    )
+    br3 = bedrooms.filter(pl.col("bed_rooms").eq(3)).select(
+        pl.col("pct").alias("pct_3br")
+    )
+
+    tax_classes = (
+        lf.group_by("tax_rate_class")
+        .agg(pl.len().alias("count"))
+        .with_columns(pl.lit(total_count_lit).alias("total_count"))
+        .with_columns(
+            pl.col("count")
+            .truediv("total_count")
+            .mul(100)
+            .round(1)
+            .alias("pct")
+        )
+    )
+
+    tc_oo = tax_classes.filter(
+        pl.col("tax_rate_class").eq("owner-occupied")
+    ).select(pl.col("pct").alias("pct_oo"))
+    tc_ltr = tax_classes.filter(
+        pl.col("tax_rate_class").eq("long-term-rental")
+    ).select(pl.col("pct").alias("pct_ltr"))
+    tc_noo = tax_classes.filter(
+        pl.col("tax_rate_class").eq("non-owner-occupied")
+    ).select(pl.col("pct").alias("pct_noo"))
+    tc_tvr = tax_classes.filter(
+        pl.col("tax_rate_class").eq("tvr-strh")
+    ).select(pl.col("pct").alias("pct_tvr"))
+
+    result = pl.concat(
+        [
+            total_count,
+            year_built,
+            assessed_value,
+            br0,
+            br1,
+            br2,
+            br3,
+            tc_oo,
+            tc_ltr,
+            tc_noo,
+            tc_tvr,
+        ],
+        how="horizontal",
+    )
+
+    return result
+
+
 ############################################################
 # Entrypoints
 ############################################################
@@ -807,6 +908,97 @@ def home_construction_by_decade(
         "sqft_median_region_pct",
     ]
     lf = lf.select(final_cols)
+
+    # Write results
+    df = lf.collect()
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
+
+
+@github_permalink
+@app.command()
+def condo_characteristics(
+    assessments_filename: Annotated[
+        str, typer.Option("--assessments", "-a", help=_assessments24_help)
+    ],
+    dwellings_filename: Annotated[
+        str, typer.Option("--dwellings", "-d", help=_dwellings_help)
+    ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
+) -> None:
+    """Calculate condo characteristics (count, median year built,
+    median assessed building value, percent of different number
+    of bedrooms, percent of different tax classes) for different
+    subsets of condos in West Maui, South Maui, and Central Maui.
+
+    Args:
+        assessments_filename (str): RPAD assessment data
+        dwellings_filename (str): RPAD dwellings data
+        out_filename (str): Output filename (csv format)
+    """
+
+    # Get combined lazy frame of all residential properties with at
+    # Get combined lazy frame of all residential properties with at
+    # least once dwelling. Undeveloped lots are excluded.
+    lf = get_assessments_dwellings_combined_lf(
+        assessments_filename, dwellings_filename
+    )
+
+    # Create tmk_sub column that uses first 9 digits of tmk
+    # to identify property complexes.
+    lf = lf.with_columns(
+        pl.col("tmk")
+        .map_elements(
+            lambda tmk: int(str(tmk)[1:9]),
+            return_dtype=pl.Int64,
+        )
+        .alias("tmk_sub")
+    )
+
+    # Extract Minatoya condos in West Maui and South Maui
+    # (the vast majority of Minatoya properties).
+    mlf = lf.filter(
+        pl.col("tmk_sub").is_in(MINATOYA_TMKS)
+        & pl.col("is_condo")
+        & (pl.col("is_west_maui") | pl.col("is_south_maui"))
+    )
+
+    # Extract non-Minatoya condos in West Maui and South Maui
+    # that are owner-occupied or long-term rentals.
+    nmlf = lf.filter(
+        ~pl.col("tmk_sub").is_in(MINATOYA_TMKS)
+        & pl.col("is_condo")
+        & (pl.col("is_west_maui") | pl.col("is_south_maui"))
+        & pl.col("tax_rate_class").is_in(
+            ["owner-occupied", "long-term-rental"]
+        )
+    )
+
+    # Extract condos in Central Maui that are owner-occupied
+    # long-term rentals.
+    clf = lf.filter(
+        pl.col("is_condo")
+        & pl.col("is_central_maui")
+        & pl.col("tax_rate_class").is_in(
+            ["owner-occupied", "long-term-rental"]
+        )
+    )
+
+    mlf_chars = calc_condo_characteristics(
+        mlf, "west-south-maui-minatoya-condos"
+    )
+    nmlf_chars = calc_condo_characteristics(
+        nmlf, "west-south-maui-non-minatoya-condos"
+    )
+    clf_chars = calc_condo_characteristics(clf, "central-maui-condos")
+
+    lf = pl.concat([mlf_chars, nmlf_chars, clf_chars])
 
     # Write results
     df = lf.collect()
