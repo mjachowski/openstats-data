@@ -70,6 +70,16 @@ cd src/
 python maui_rpad.py condo-characteristics -a [assessments.csv] -d [dwellings.csv] -o out/maui-condo-characteristics.csv
 ```
 
+## Affordable Sales
+Use the parsed RPAD data generated in the section above and household
+income data from the section below.
+
+```bash
+cd src/
+
+# Example command. Replace bracketed argument with actual filenames.
+python maui-rpad.py affordable-sales -a [assessments.csv] -d [dwellings.csv] -s [sales.csv] -c [cpi.csv] -i [income.csv] -o out/maui-affordable-sales.csv
+```
 
 ## Household Income
 Get the data:

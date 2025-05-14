@@ -1,8 +1,8 @@
 import polars as pl
 import typer
 from typing_extensions import Annotated
-from github_permalink import github_permalink, get_current_permalink
 
+from github_permalink import get_current_permalink, github_permalink
 from util import read_csv
 
 app = typer.Typer()
