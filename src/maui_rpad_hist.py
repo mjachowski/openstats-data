@@ -100,7 +100,7 @@ def add_maui_region_col(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf
 
 
-def get_complex_resident_occupancy(
+def get_complex_tvr_occupancy(
     assessments_filename: str,
 ) -> pl.LazyFrame:
     # Read historical assessments file
@@ -165,11 +165,18 @@ def get_complex_resident_occupancy(
     # Exclude current active year
     lf = lf.filter(pl.col("taxyr").le(MAX_YEAR))
 
+    # Exclude years before owner-occupied existed
+    lf = lf.filter(pl.col("taxyr").ge(1993))
+
     # Add Maui region column
     lf = add_maui_region_col(lf)
 
     # Filter to Minatoya properties
     lf = lf.filter(pl.col("tmk_sub").is_in(MINATOYA_TMKS))
+
+    # DEBUG: first taxyr for each classification
+    # dlf = lf.group_by("tax_class").agg(pl.col("taxyr").min())
+    # print(dlf.collect())
 
     # Add Minatoya complex names
     lf = lf.with_columns(
@@ -180,7 +187,7 @@ def get_complex_resident_occupancy(
     lf = lf.sort("tmk", "taxyr")
 
     # Group by tmk_sub and year, calculate resident percent
-    # Resident properties are owner-occupied or long-term-rental
+    # TVR properties were classed as hotel/resort in earlier years
     agg_lf = (
         lf.group_by("tmk_sub", "taxyr")
         .agg(
@@ -188,69 +195,69 @@ def get_complex_resident_occupancy(
             pl.col("region").first(),
             pl.len().alias("total_count"),
             pl.col("tax_class")
-            .is_in(["owner-occupied", "long-term-rental"])
+            .is_in(["hotel/resort", "tvr-strh"])
             .sum()
-            .alias("res_count"),
+            .alias("tvr_count"),
         )
         .with_columns(
-            pl.col("res_count")
+            pl.col("tvr_count")
             .truediv(pl.col("total_count"))
             .mul(100)
             .round(1)
-            .alias("res_pct"),
+            .alias("tvr_pct"),
         )
     ).sort("tmk_sub", "taxyr")
 
-    # Calculate max owner occupied percent and other related
+    # Calculate min tvr percent and other related
     # fields for each complex.
     summary_lf = (
         agg_lf.group_by("tmk_sub")
         .agg(
             pl.col("complex_name").first(),
             pl.col("region").first(),
-            pl.col("res_count")
-            .gather(pl.col("res_pct").arg_max())
-            .alias("max_res_count"),
+            pl.col("tvr_count")
+            .gather(pl.col("tvr_pct").arg_min())
+            .alias("min_tvr_count"),
             pl.col("total_count")
-            .gather(pl.col("res_pct").arg_max())
-            .alias("total_count_at_max_res_pct"),
-            pl.col("res_pct").max().alias("max_res_pct"),
+            .gather(pl.col("tvr_pct").arg_min())
+            .alias("total_count_at_min_tvr_pct"),
+            pl.col("tvr_pct").min().alias("min_tvr_pct"),
             pl.col("taxyr")
-            .gather(pl.col("res_pct").arg_max())
-            .alias("taxyr_of_max_res_pct"),
+            .gather(pl.col("tvr_pct").arg_min())
+            .alias("taxyr_of_min_tvr_pct"),
             pl.col("total_count")
             .gather(pl.col("taxyr").arg_max())
             .alias("cur_total_count"),
-            pl.col("res_pct")
+            pl.col("tvr_pct")
             .gather(pl.col("taxyr").arg_max())
-            .alias("cur_res_pct"),
+            .alias("cur_tvr_pct"),
         )
         .with_columns(
-            pl.col("max_res_count").list.first().alias("max_res_count"),
-            pl.col("total_count_at_max_res_pct")
+            pl.col("min_tvr_count").list.first().alias("min_tvr_count"),
+            pl.col("total_count_at_min_tvr_pct")
             .list.first()
-            .alias("total_count_at_max_res_pct"),
-            pl.col("taxyr_of_max_res_pct")
+            .alias("total_count_at_min_tvr_pct"),
+            pl.col("taxyr_of_min_tvr_pct")
             .list.first()
-            .alias("taxyr_of_max_res_pct"),
+            .alias("taxyr_of_min_tvr_pct"),
             pl.col("cur_total_count").list.first().alias("cur_total_count"),
-            pl.col("cur_res_pct").list.first().alias("cur_res_pct"),
+            pl.col("cur_tvr_pct").list.first().alias("cur_tvr_pct"),
         )
         .with_columns(
-            pl.col("cur_res_pct").sub("max_res_pct").alias("res_pct_diff"),
+            pl.col("cur_tvr_pct").sub("min_tvr_pct").alias("tvr_pct_diff"),
         )
-        .sort("max_res_pct", descending=True)
+        .sort("min_tvr_pct", descending=False)
         .select(
             "complex_name",
             "tmk_sub",
             "region",
-            "taxyr_of_max_res_pct",
-            "max_res_count",
-            "total_count_at_max_res_pct",
+            "taxyr_of_min_tvr_pct",
+            "min_tvr_count",
+            "total_count_at_min_tvr_pct",
             "cur_total_count",
-            "max_res_pct",
-            "cur_res_pct",
-            "res_pct_diff",
+            "min_tvr_pct",
+            "cur_tvr_pct",
+            "tvr_pct_diff",
         )
     )
 
@@ -266,7 +273,7 @@ _out_help = "Output filename (csv format)"
 
 
 @app.command()
-def minatoya_resident_occupancy(
+def minatoya_tvr_occupancy(
     assessments_filename: Annotated[
         str, typer.Option("--assessments", "-a", help=_assessments_help)
     ],
@@ -274,25 +281,25 @@ def minatoya_resident_occupancy(
         str, typer.Option("--out", "-o", help=_out_help)
     ],
 ) -> None:
-    """TODO
+    """Calculate Minatoya complex TVR occupancy rates.
 
     Args:
         assessments_filename (str): historical RPAD assessment data
         out_filename (str): Output filename (csv format)
     """
 
-    lf = get_complex_resident_occupancy(assessments_filename)
+    lf = get_complex_tvr_occupancy(assessments_filename)
 
     lf = lf.select(
         "complex_name",
         "tmk_sub",
         "region",
-        "taxyr_of_max_res_pct",
-        "max_res_count",
-        "total_count_at_max_res_pct",
-        "max_res_pct",
-        "cur_res_pct",
-        "res_pct_diff",
+        "taxyr_of_min_tvr_pct",
+        "min_tvr_count",
+        "total_count_at_min_tvr_pct",
+        "min_tvr_pct",
+        "cur_tvr_pct",
+        "tvr_pct_diff",
     )
 
     # Write results
@@ -306,7 +313,7 @@ def minatoya_resident_occupancy(
 
 
 @app.command()
-def minatoya_thresh_counts(
+def minatoya_tvr_thresh_counts(
     count_type: Annotated[
         str, typer.Option("--count-type", "-c", help=_count_type_help)
     ],
@@ -317,24 +324,33 @@ def minatoya_thresh_counts(
         str, typer.Option("--out", "-o", help=_out_help)
     ],
 ) -> None:
-    lf = get_complex_resident_occupancy(assessments_filename)
+    """Calculate Minatoya unit and complex counts at different maximum
+    TVR percentages.
+
+    Args:
+        assessments_filename (str): historical RPAD assessment data
+        out_filename (str): Output filename (csv format)
+    """
+
+    lf = get_complex_tvr_occupancy(assessments_filename)
 
     lf = lf.select(
         "complex_name",
         "tmk_sub",
         "region",
-        "max_res_pct",
+        "min_tvr_pct",
         "cur_total_count",
     )
 
     is_units = count_type == "units"
 
-    thresh_list = list(range(0, 55, 5))
+    thresh_list = list(range(0, 105, 5))
+    thresh_list.reverse()
 
     lf_list = []
     for thresh in thresh_list:
         thresh_lf = (
-            lf.filter(pl.col("max_res_pct").ge(thresh))
+            lf.filter(pl.col("min_tvr_pct").le(thresh))
             .group_by("region")
             .agg(
                 pl.col("cur_total_count").sum().alias(f"units_{thresh}%")
@@ -344,7 +360,7 @@ def minatoya_thresh_counts(
         )
 
         total_thresh_lf = lf.filter(
-            pl.col("max_res_pct").ge(thresh)
+            pl.col("min_tvr_pct").le(thresh)
         ).select(
             pl.lit("Maui County").alias("region"),
             pl.col("cur_total_count").sum().alias(f"units_{thresh}%")
