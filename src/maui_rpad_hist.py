@@ -100,9 +100,7 @@ def add_maui_region_col(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf
 
 
-def get_complex_tvr_occupancy(
-    assessments_filename: str,
-) -> pl.LazyFrame:
+def get_base_minatoya_lf(assessments_filename: str) -> pl.LazyFrame:
     # Read historical assessments file
     schema = {
         "parid": pl.Int64,
@@ -171,6 +169,9 @@ def get_complex_tvr_occupancy(
     # Add Maui region column
     lf = add_maui_region_col(lf)
 
+    # Drop columns where region is null, those are rare typos in tmks.
+    lf = lf.filter(~pl.col("region").is_null())
+
     # Filter to Minatoya properties
     lf = lf.filter(pl.col("tmk_sub").is_in(MINATOYA_TMKS))
 
@@ -185,6 +186,12 @@ def get_complex_tvr_occupancy(
 
     # Sort by tmk and taxyr
     lf = lf.sort("tmk", "taxyr")
+
+    return lf
+
+
+def get_complex_tvr_occupancy(assessments_filename: str) -> pl.LazyFrame:
+    lf = get_base_minatoya_lf(assessments_filename)
 
     # Group by tmk_sub and year, calculate resident percent
     # TVR properties were classed as hotel/resort in earlier years
@@ -206,7 +213,8 @@ def get_complex_tvr_occupancy(
             .round(1)
             .alias("tvr_pct"),
         )
-    ).sort("tmk_sub", "taxyr")
+        .sort("tmk_sub", "taxyr")
+    )
 
     # Calculate min tvr percent and other related
     # fields for each complex.
@@ -268,6 +276,7 @@ def get_complex_tvr_occupancy(
 # Entrypoints
 ############################################################
 _count_type_help = "'units' or 'complexes'"
+_tvr_pct_thresh_help = "include complexes with minimum tvr percentages below this threshold (0-100)"
 _assessments_help = "Assessments history csv file from Maui County RPAD"
 _out_help = "Output filename (csv format)"
 
@@ -380,6 +389,100 @@ def minatoya_tvr_thresh_counts(
 
     # Write results
     df = lf.collect()
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
+
+
+@app.command()
+def minatoya_tvr_rates(
+    tvr_pct_thresh: Annotated[
+        int,
+        typer.Option("--thresh", "-t", help=_tvr_pct_thresh_help),
+    ],
+    assessments_filename: Annotated[
+        str, typer.Option("--assessments", "-a", help=_assessments_help)
+    ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
+) -> None:
+    """Calculate Minatoya TVR rates.
+
+    Args:
+        assessments_filename (str): historical RPAD assessment data
+        out_filename (str): Output filename (csv format)
+    """
+
+    base_lf = get_base_minatoya_lf(assessments_filename)
+
+    complex_lf = get_complex_tvr_occupancy(assessments_filename)
+
+    thresh_lf = complex_lf.filter(
+        pl.col("min_tvr_pct").lt(tvr_pct_thresh)
+    ).select("tmk_sub")
+
+    filtered_base_lf = thresh_lf.join(base_lf, on="tmk_sub", how="left")
+
+    agg_lf = (
+        filtered_base_lf.group_by("region", "taxyr")
+        .agg(
+            pl.len().alias("total_count"),
+            pl.col("tax_class")
+            .is_in(["hotel/resort", "tvr-strh"])
+            .sum()
+            .alias("tvr_count"),
+        )
+        .with_columns(
+            pl.col("tvr_count")
+            .truediv(pl.col("total_count"))
+            .mul(100)
+            .round(1)
+            .alias("tvr_pct"),
+        )
+        .sort("region", "taxyr")
+        .select(
+            "region",
+            "taxyr",
+            "tvr_pct",
+            "tvr_count",
+            "total_count",
+        )
+    )
+
+    county_agg_lf = (
+        filtered_base_lf.group_by("taxyr")
+        .agg(
+            pl.len().alias("total_count"),
+            pl.col("tax_class")
+            .is_in(["hotel/resort", "tvr-strh"])
+            .sum()
+            .alias("tvr_count"),
+        )
+        .with_columns(
+            pl.col("tvr_count")
+            .truediv(pl.col("total_count"))
+            .mul(100)
+            .round(1)
+            .alias("tvr_pct"),
+        )
+        .sort("taxyr")
+        .select(
+            pl.lit("Maui County").alias("region"),
+            "taxyr",
+            "tvr_pct",
+            "tvr_count",
+            "total_count",
+        )
+    )
+
+    agg_lf = pl.concat([agg_lf, county_agg_lf])
+
+    # Write results
+    df = agg_lf.collect()
     df.write_csv(out_filename)
 
     # Write github permalink
