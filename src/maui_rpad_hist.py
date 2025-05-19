@@ -100,7 +100,7 @@ def add_maui_region_col(lf: pl.LazyFrame) -> pl.LazyFrame:
     return lf
 
 
-def get_base_minatoya_lf(assessments_filename: str) -> pl.LazyFrame:
+def get_base_assessments_lf(assessments_filename: str) -> pl.LazyFrame:
     # Read historical assessments file
     schema = {
         "parid": pl.Int64,
@@ -171,6 +171,15 @@ def get_base_minatoya_lf(assessments_filename: str) -> pl.LazyFrame:
 
     # Drop columns where region is null, those are rare typos in tmks.
     lf = lf.filter(~pl.col("region").is_null())
+
+    # Sort by tmk and taxyr
+    lf = lf.sort("tmk", "taxyr")
+
+    return lf
+
+
+def get_base_minatoya_lf(assessments_filename: str) -> pl.LazyFrame:
+    lf = get_base_assessments_lf(assessments_filename)
 
     # Filter to Minatoya properties
     lf = lf.filter(pl.col("tmk_sub").is_in(MINATOYA_TMKS))
@@ -483,6 +492,119 @@ def minatoya_tvr_rates(
 
     # Write results
     df = agg_lf.collect()
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
+
+
+@app.command()
+def residential_occupancy(
+    assessments_filename: Annotated[
+        str, typer.Option("--assessments", "-a", help=_assessments_help)
+    ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
+) -> None:
+    """Calculate residential occupancy rates for different regions of Maui.
+
+    Args:
+        assessments_filename (str): historical RPAD assessment data
+        out_filename (str): Output filename (csv format)
+    """
+
+    lf = get_base_assessments_lf(assessments_filename)
+
+    # Filter to residential tax classes
+    residential_tax_classes = [
+        "non-owner-occupied",
+        "apartment",
+        "owner-occupied",  # starts in 1993
+        "hotel/resort",
+        "tvr-strh",  # starts in 2018
+        "long-term-rental",  # starts in 2022
+    ]
+    lf = lf.filter(pl.col("tax_class").is_in(residential_tax_classes))
+
+    # Find all complexes (which share a tmk_sub) that ever have tvr-strh.
+    tvr_complex_lf = lf.group_by("tmk_sub").agg(
+        pl.col("tax_class").eq("tvr-strh").any().alias("has_tvr"),
+    )
+
+    # Join with original lf to annotate which properties are in complexes
+    # that will eventually be in tvr-strh zoning.
+    joined_lf = lf.join(tvr_complex_lf, on="tmk_sub", how="left")
+
+    # If a tmk has has_tvr set to true and it has tax_class set to
+    # hotel/resort, change the tax class to tvr-strh
+    joined_lf = joined_lf.with_columns(
+        pl.when(pl.col("has_tvr") & pl.col("tax_class").eq("hotel/resort"))
+        .then(pl.lit("tvr-strh"))
+        .otherwise(pl.col("tax_class"))
+        .alias("tax_class")
+    )
+
+    # Now re-filter properties to exclude "hotel/resort"
+    joined_lf = joined_lf.filter(pl.col("tax_class").ne("hotel/resort"))
+
+    # Non-owner-occupied tax classes change over time, so let's
+    # group them to simplify analysis.
+    other_residential_tax_classes = [
+        "non-owner-occupied",
+        "apartment",
+        "long-term-rental",
+    ]
+    joined_lf = joined_lf.with_columns(
+        pl.when(pl.col("tax_class").is_in(other_residential_tax_classes))
+        .then(pl.lit("non-owner-occupied"))
+        .otherwise(pl.col("tax_class"))
+        .alias("tax_class")
+    )
+
+    # For each region and tax year, calculate total number of
+    # residential (total), owner-occupied, tvr-strh, and
+    # non-owner-occupied properties, as well as percentages.
+    counts_lf = (
+        joined_lf.group_by("region", "taxyr")
+        .agg(
+            pl.len().alias("count_residential"),
+            pl.col("tax_class")
+            .eq("owner-occupied")
+            .sum()
+            .alias("count_oo"),
+            pl.col("tax_class").eq("tvr-strh").sum().alias("count_tvr"),
+            pl.col("tax_class")
+            .eq("non-owner-occupied")
+            .sum()
+            .alias("count_noo"),
+        )
+        .with_columns(
+            pl.col("count_oo")
+            .truediv("count_residential")
+            .mul(100)
+            .round(1)
+            .alias("pct_oo"),
+            pl.col("count_tvr")
+            .truediv("count_residential")
+            .mul(100)
+            .round(1)
+            .alias("pct_tvr"),
+            pl.col("count_noo")
+            .truediv("count_residential")
+            .mul(100)
+            .round(1)
+            .alias("pct_noo"),
+        )
+        .sort("region", "taxyr")
+    )
+
+    lf = counts_lf
+
+    # Write results
+    df = lf.collect()
     df.write_csv(out_filename)
 
     # Write github permalink
