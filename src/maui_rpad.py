@@ -1159,6 +1159,153 @@ def condo_characteristics(
         f.write(get_current_permalink() or "None")
 
 
+@github_permalink
+@app.command()
+def new_home_usage(
+    assessments_filename: Annotated[
+        str, typer.Option("--assessments", "-a", help=_assessments24_help)
+    ],
+    dwellings_filename: Annotated[
+        str, typer.Option("--dwellings", "-d", help=_dwellings_help)
+    ],
+    out_filename: Annotated[
+        str, typer.Option("--out", "-o", help=_out_help)
+    ],
+) -> None:
+    """Calculate number of recently constructed homes used
+    by residents vs non-residents.
+
+    Args:
+        assessments_filename (str): RPAD assessment data
+        dwellings_filename (str): RPAD dwellings data
+        out_filename (str): Output filename (csv format)
+    """
+
+    # Get combined lazy frame of all residential properties with at
+    # least once dwelling. Undeveloped lots are excluded.
+    lf = get_assessments_dwellings_combined_lf(
+        assessments_filename, dwellings_filename
+    )
+
+    MIN_YEAR = 2010
+    MAX_YEAR = 2023
+
+    # Step 1: Filter to recent decades
+    base_lf = lf.filter(pl.col("year_built").ge(MIN_YEAR)).filter(
+        pl.col("year_built").le(MAX_YEAR)
+    )
+
+    # Step 2: Add resident_type column
+    resident_tax_classes = ["owner-occupied", "long-term-rental"]
+    nonresident_tax_classes = ["non-owner-occupied", "tvr-strh"]
+    base_lf = base_lf.with_columns(
+        pl.when(pl.col("tax_rate_class").is_in(resident_tax_classes))
+        .then(pl.lit("resident"))
+        .when(pl.col("tax_rate_class").is_in(nonresident_tax_classes))
+        .then(pl.lit("nonresident"))
+        .otherwise(None)
+        .alias("resident_type")
+    )
+
+    # Step 3: Count homes by home_type & resident_type in each region
+    counts_by_type_lf = (
+        base_lf.group_by("region", "home_type", "resident_type")
+        .agg(
+            pl.len().alias("count"),
+        )
+        .sort("home_type", "region", "resident_type")
+    )
+
+    # Get county counts as above, but do not group on region.
+    county_counts_by_type_lf = (
+        base_lf.group_by("home_type", "resident_type")
+        .agg(
+            pl.len().alias("count"),
+        )
+        .select(
+            pl.lit("Maui County").alias("region"),
+            "home_type",
+            "resident_type",
+            "count",
+        )
+        .sort("home_type", "region", "resident_type")
+    )
+
+    # Create a new home_type called "All Homes" that sums the
+    # count for each home_type, grouped by region and resident_type
+    all_homes_lf = (
+        counts_by_type_lf.group_by("region", "resident_type")
+        .agg(
+            pl.col("count").sum().alias("count"),
+        )
+        .with_columns(
+            pl.lit("All Homes").alias("home_type"),
+        )
+        .sort("home_type", "region", "resident_type")
+    )
+
+    county_all_homes_lf = (
+        county_counts_by_type_lf.group_by("resident_type")
+        .agg(
+            pl.col("region").first(),
+            pl.col("count").sum().alias("count"),
+        )
+        .with_columns(
+            pl.lit("All Homes").alias("home_type"),
+        )
+        .select(
+            "region",
+            "resident_type",
+            "count",
+            "home_type",
+        )
+        .sort("home_type", "region", "resident_type")
+    )
+
+    # Combine the per region data with the county data
+    join_cols = ["home_type", "region", "resident_type", "count"]
+    joined_lf = pl.concat(
+        [
+            counts_by_type_lf.select(join_cols),
+            county_counts_by_type_lf.select(join_cols),
+            all_homes_lf.select(join_cols),
+            county_all_homes_lf.select(join_cols),
+        ]
+    )
+
+    # Add columns for region_count and pct
+    total_lf = joined_lf.group_by("region", "home_type").agg(
+        pl.col("count").sum().alias("region_count")
+    )
+    joined_lf = joined_lf.join(
+        total_lf, on=["region", "home_type"], how="left"
+    )
+    joined_lf = joined_lf.with_columns(
+        pl.col("count")
+        .truediv(pl.col("region_count"))
+        .mul(100)
+        .round(1)
+        .alias("pct")
+    )
+
+    lf = joined_lf.select(
+        "home_type",
+        "region",
+        "resident_type",
+        "count",
+        "pct",
+    )
+
+    # Write results
+    df = lf.collect()
+    df.write_csv(out_filename)
+
+    # Write github permalink
+    txt_filename = out_filename.replace(".csv", ".txt")
+    with open(txt_filename, "w") as f:
+        f.write(get_current_permalink() or "None")
+
+
 # @github_permalink
 # @app.command()
 # def dummy(
